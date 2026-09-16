@@ -1,0 +1,1 @@
+A collection of specs and design documents describing the application itself.
