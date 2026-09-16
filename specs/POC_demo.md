@@ -1,5 +1,7 @@
 # POC To Demonstrate Capabilities of Tools
 
+Run `npm run poc:trace_pointer`
+
 ## Steps
 
 1. Init repo
@@ -16,7 +18,9 @@
     - dumps the C/ASM/registers into a JSON and provide to Chat GPT
     - use sub-agent LLM reasoning to determine what ASM opcode line instruction address to overwrite with a NOOP
     - dumps the base address value of the instruction to overwite. Let me manually make this change and test in Cheat Engine. Do not worry about calling MCP ce_write_memory to patch instruction address opcode yet.
-10. Once the above is working, begin working on the `llm_conversations\yarn2\DESIGN.md`
+10. Once the above is working, begin working on the `docs\llm_conversations\yarn2\DESIGN.md`
+
+
 
 ## What does this prove?
 
@@ -41,4 +45,4 @@ Tracking down base addresses from pointed address. Tracing base addresses requir
 
 ## How do the tools work together?
 
-Cheat Engine MCP can be used to find the initial value, then the x64dbg MCP can be used to set a write breakpoint on the found address. When the x64dbg breakpoint fires, the user must manually say "
+Cheat Engine MCP can track down base addresses using Cheat Engine's debugger and human intervention. A simple loop with an escape hatch lets the control when scans happen. x64dbg provides disassembly support as well. 
