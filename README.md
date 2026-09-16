@@ -5,7 +5,7 @@ A tool to automate video game reverse engineering and cheat client development u
 This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing custom C I barely understood to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
 
 ## How ?
-Use a Node JS script for orchestrating the whole reverse engineering process. Use MCP for Cheat Engine, x64dbg and Ghidra for providing reverse engineering functionality; aforementioned tools provide the actual hacking capabilities. 
+Use a Node JS script for orchestrating the whole reverse engineering process. Use MCP to interact with the low-level tools: Cheat Engine, x64dbg and Ghidra.. 
 
 Cheat Engine's hardware debugging driver is used to monitor writes to memory addresses for tracing down base addresses. This means techincally this framework is hardware independent.
 
@@ -36,23 +36,23 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
     - [ ] address space search (increase/decrease/manual_popup)
     - [ ] restart game
     - [ ] set "monitor writes" breakpoint on any address in filtered list using Cheat Engine MCP and custom Lua to store results. Use keybindings to choose the address in filtered list for "monitor breakpoint", use GUI to show results of rip and locations like 
-```
-{
-  "watched_address": "0x000001F812345678",
-  "writes": [
+    ```
     {
-      "rip": "0x00007FF612341234",
-      "location": "game.exe+0x1234",
-      "count": 1832
-    },
-    {
-      "rip": "0x00007FF612348765",
-      "location": "game.exe+0x8765",
-      "count": 421
+    "watched_address": "0x000001F812345678",
+    "writes": [
+        {
+        "rip": "0x00007FF612341234",
+        "location": "game.exe+0x1234",
+        "count": 1832
+        },
+        {
+        "rip": "0x00007FF612348765",
+        "location": "game.exe+0x8765",
+        "count": 421
+        }
+    ]
     }
-  ]
-}
-```    
+    ```    
     - [ ] showing the ASM/C for all addresses in the filtered list. This will make it easier to choose which address to pointer chase
     - [ ] choose a new address from the "what wrote to this address" screen to follow. Following means showing ASM, C, and setting a "monitor writes" breakpoint.
     - [ ] GUI for showing all "monitor write" results like Cheat Engine does.
