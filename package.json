@@ -1,0 +1,33 @@
+{
+  "name": "skid_factory",
+  "version": "1.0.0",
+  "description": "A tool to automate video game reverse engineering and cheat client development using LLMs and MCP. Proof is provided using the \"Not a Hero\" single player, DRM free game.",
+  "main": "index.ts",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "poc:trace_pointer": "node src/poc_trace_pointer.ts",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wrong-commit/skid_factory.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/wrong-commit/skid_factory/issues"
+  },
+  "homepage": "https://github.com/wrong-commit/skid_factory#readme",
+  "devDependencies": {
+    "@types/node": "^22.20.3",
+    "typescript": "^7.0.2"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  }
+}
