@@ -90,12 +90,15 @@ Throw when `isError === true` or when there is no usable content.
 | `ScanFirst` | `ce_scan_first` | `pid`, `value`, `type` | `CeScanResultSchema` (placeholder) |
 | `ScanNext` | `ce_scan_next` | same | same |
 | `ScanReset` | `ce_scan_reset` | `pid` | `CeScanResetResultSchema` (placeholder: `{ ok }`) |
-| `GetWriteLocations` | `get_write_locations` | `address` | `WriteDumpSchema` |
+| `EvalLua` | `ce_eval_lua` | `code` | `CeEvalLuaResultSchema` (string or `{ result\|value\|output }`) |
+| `GetWriteLocations` | `get_write_locations` | `address` | `WriteDumpSchema` (deprecated; prefer custom handler) |
 | `Disassemble` | `disassemble` | `address` | `DisassembleResultSchema` (placeholder) |
+
+Custom app operation **`ce_monitor_writes`** is not an MCP tool: see [`SPEC_POC_FIND_WRITE_ADDRESS.md`](./SPEC_POC_FIND_WRITE_ADDRESS.md). It loads `src/lua/monitor_writes.lua` and calls `CeTool.EvalLua`.
 
 REPL mapping: `reset_scan` → `callTool(mcp, CeTool.ScanReset, { pid })`, then clear local `hasScanned`.
 
-**FIXME:** align `GetWriteLocations` / `Disassemble` / `ScanReset` result fields (and scan result fields) with the installed CE MCP bridge’s real tool names and JSON shapes. Until then, connect-time `REQUIRED_CE_TOOLS` checks will fail against a mismatched server — that is intentional.
+**FIXME:** align `EvalLua` / `GetWriteLocations` / `Disassemble` / `ScanReset` result fields (and scan result fields) with the installed CE MCP bridge’s real tool names and JSON shapes. Until then, connect-time `REQUIRED_CE_TOOLS` checks will fail against a mismatched server — that is intentional.
 
 ## Connect-time checks
 
@@ -132,8 +135,11 @@ POC may keep `MCP RESULT DEBUG` logging until schemas stabilize.
 | Path | Role |
 | --- | --- |
 | `src/mcp/ce_tools.ts` | `CeTool`, catalog, extract/parse, `callTool` |
-| `src/poc_trace_pointer.ts` | REPL; imports typed `callTool` |
+| `src/handlers/monitor_writes.ts` | Custom `ce_monitor_writes` → `ce_eval_lua` |
+| `src/lua/monitor_writes.lua` | Editable CE write-watch script |
+| `src/poc_trace_pointer.ts` | REPL; imports typed `callTool` + handlers |
 | `specs/SPEC_MCP_CALL_TYPE_SAFETY.md` | This document |
+| `specs/SPEC_POC_FIND_WRITE_ADDRESS.md` | Find-what-writes POC flow |
 
 ## Acceptance criteria
 
@@ -141,7 +147,7 @@ POC may keep `MCP RESULT DEBUG` logging until schemas stabilize.
 - [x] Zod schemas exist for each catalogued tool (placeholders allowed until bridge confirmed).
 - [x] Connect asserts required tool names.
 - [ ] Schemas match a real CE MCP bridge response (integration pass).
-- [ ] `GetWriteLocations` / `Disassemble` names confirmed against installed server.
+- [ ] `ce_eval_lua` arg/result fields confirmed against installed server.
 - [ ] Optional: golden fixtures under `tests/mcp/` for `extractMcpJsonPayload` + `parseToolResult`.
 
 ## Out of scope follow-ups

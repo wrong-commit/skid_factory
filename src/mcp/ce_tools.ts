@@ -11,6 +11,9 @@ export const CeTool = {
     ScanFirst: "ce_scan_first",
     ScanNext: "ce_scan_next",
     ScanReset: "ce_scan_reset",
+    /** Escape hatch: run arbitrary CE Lua (used by custom ce_monitor_writes). */
+    EvalLua: "ce_eval_lua",
+    /** @deprecated Prefer custom handler monitorWrites → ce_eval_lua. */
     GetWriteLocations: "get_write_locations",
     Disassemble: "disassemble",
 } as const;
@@ -62,6 +65,23 @@ export const DisassembleResultSchema = z.object({
 });
 
 /**
+ * FIXME: confirm ce_eval_lua arg/result field names against the installed CE MCP bridge.
+ * Handler expects a string (WriteDump JSON) either as the payload itself or under result/value/output.
+ */
+export const CeEvalLuaArgsSchema = z.object({
+    code: z.string().min(1),
+});
+
+export const CeEvalLuaResultSchema = z.union([
+    z.string(),
+    z.object({
+        result: z.string().optional(),
+        value: z.string().optional(),
+        output: z.string().optional(),
+    }),
+]);
+
+/**
  * Per-tool args + Zod result schema. Keys MUST match live MCP tool names.
  * FIXME: rename GetWriteLocations / Disassemble keys when the bridge's real names are known.
  */
@@ -77,6 +97,10 @@ export const ceToolCatalog = {
     [CeTool.ScanReset]: {
         args: CeScanResetArgsSchema,
         result: CeScanResetResultSchema,
+    },
+    [CeTool.EvalLua]: {
+        args: CeEvalLuaArgsSchema,
+        result: CeEvalLuaResultSchema,
     },
     [CeTool.GetWriteLocations]: {
         args: z.object({ address: z.string().min(1) }),
@@ -101,7 +125,7 @@ export const REQUIRED_CE_TOOLS: readonly CeToolName[] = [
     CeTool.ScanFirst,
     CeTool.ScanNext,
     CeTool.ScanReset,
-    CeTool.GetWriteLocations,
+    CeTool.EvalLua,
     CeTool.Disassemble,
 ];
 

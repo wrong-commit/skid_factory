@@ -23,6 +23,7 @@ import {
     callTool,
     type WriteDump,
 } from "./mcp/ce_tools.ts";
+import { monitorWrites } from "./handlers/monitor_writes.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -113,12 +114,58 @@ function printHelp(): void {
   scan int32 <int32>              ce_scan_first (or next filter after first scan)
   reset_scan                      ce_scan_reset + clear local scan state
   choose_address                  print candidates; set write watch on chosen address
-  show_write_locations            dump writers JSON for current watch
+  monitor_writes [addr] [size] [ms]  custom ce_monitor_writes via ce_eval_lua (default: watched, size=4, 3000ms)
+  show_write_locations            same as monitor_writes using current watched address
   disassemble_watched             disassemble ASM around the watched address
   follow_address <loc|hex>        move write watch to that instruction / address
   save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
   quit | exit | cancel            exit without saving`);
+}
+
+/**
+ * Parse `monitor_writes [addr] [size] [durationMs]` or `show_write_locations`.
+ * Returns null after printing usage errors.
+ */
+function parseMonitorWritesCommand(
+    cmd: string,
+    watched: string | undefined,
+): { address: string; size: number; durationMs: number } | null {
+    if (cmd === "show_write_locations") {
+        if (!watched) {
+            console.error("No watched address yet. Run choose_address or monitor_writes <addr> first.");
+            return null;
+        }
+        return { address: watched, size: 4, durationMs: 3000 };
+    }
+
+    if (cmd === "monitor_writes") {
+        if (!watched) {
+            console.error("Usage: monitor_writes <addr> [size=4] [durationMs=3000]");
+            return null;
+        }
+        return { address: watched, size: 4, durationMs: 3000 };
+    }
+
+    const parts = cmd.slice("monitor_writes ".length).trim().split(/\s+/);
+    const address = parts[0];
+    if (!address) {
+        console.error("Usage: monitor_writes <addr> [size=4] [durationMs=3000]");
+        return null;
+    }
+
+    const size = parts[1] !== undefined ? Number(parts[1]) : 4;
+    const durationMs = parts[2] !== undefined ? Number(parts[2]) : 3000;
+    if (!Number.isInteger(size) || size <= 0) {
+        console.error(`Invalid size: ${parts[1]}`);
+        return null;
+    }
+    if (!Number.isInteger(durationMs) || durationMs < 0) {
+        console.error(`Invalid durationMs: ${parts[2]}`);
+        return null;
+    }
+
+    return { address, size, durationMs };
 }
 
 /**
@@ -187,16 +234,21 @@ async function pocTraceBaseAddress(
             continue;
         }
 
-        // Dump the write locations for the watched address
-        if (cmd === "show_write_locations") {
-            if (!watched) {
-                console.error("No watched address yet. Run choose_address first.");
+        // Dump the write locations for the watched address (custom ce_monitor_writes)
+        if (
+            cmd === "show_write_locations" ||
+            cmd === "monitor_writes" ||
+            cmd.startsWith("monitor_writes ")
+        ) {
+            const monitorArgs = parseMonitorWritesCommand(cmd, watched);
+            if (!monitorArgs) {
                 continue;
             }
-            // FIXME: confirm CeTool.GetWriteLocations matches the live MCP tool name
-            const dump: WriteDump = await callTool(mcp, CeTool.GetWriteLocations, {
-                address: watched,
-            });
+            watched = monitorArgs.address;
+            console.log(
+                `Monitoring writes to ${monitorArgs.address} (size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
+            );
+            const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
             console.log(JSON.stringify(dump, null, 2));
 
             // FIXME: optional — ask Codex which writer to follow next
@@ -296,6 +348,8 @@ export {
     appendBaseAddress,
     loadBaseAddresses,
 };
+
+export { monitorWrites } from "./handlers/monitor_writes.ts";
 
 export {
     CeTool,
