@@ -87,6 +87,7 @@ export const CeScanResetResultSchema = z.object({
 
 export const WriteHitSchema = z.object({
     rip: z.string(),
+    ripRaw: z.string(),
     location: z.string(),
     count: z.number().int().nonnegative(),
 });

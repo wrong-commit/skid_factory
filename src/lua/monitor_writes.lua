@@ -8,7 +8,7 @@
     JSON string matching WriteDumpSchema:
       {
         "watched_address": "0x...",
-        "writes": [ { "rip": "0x...", "location": "...", "count": N }, ... ]
+        "writes": [ { "rip": "0x...", "ripRaw": "...", "location": "...", "count": N }, ... ]
       }
 
   Flow:
@@ -53,10 +53,12 @@ function monitorWrites(address, size, durationMs)
   -- debugger_onBreakpoint dispatcher (hardware slot limit: one active watch).
   debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, function()
     local rip = RIP
-    if hits[rip] == nil then
-      hits[rip] = 0
+    local entry = hits[rip]
+    if entry == nil then
+      entry = { count = 0, raw = tostring(RIP) }
+      hits[rip] = entry
     end
-    hits[rip] = hits[rip] + 1
+    entry.count = entry.count + 1
     debug_continueFromBreakpoint(co_run)
     return 1
   end)
@@ -66,15 +68,16 @@ function monitorWrites(address, size, durationMs)
   debug_removeBreakpoint(address)
 
   local writes = {}
-  for rip, count in pairs(hits) do
+  for rip, entry in pairs(hits) do
     local location = getNameFromAddress(rip)
     if location == nil or location == "" then
       location = hexAddress(rip)
     end
     writes[#writes + 1] = {
       rip = hexAddress(rip),
+      ripRaw = entry.raw,
       location = location,
-      count = count,
+      count = entry.count,
     }
   end
 
@@ -89,8 +92,9 @@ function monitorWrites(address, size, durationMs)
   for i = 1, #writes do
     local w = writes[i]
     parts[#parts + 1] = string.format(
-      '{"rip":"%s","location":"%s","count":%d}',
+      '{"rip":"%s","ripRaw":"%s","location":"%s","count":%d}',
       w.rip,
+      jsonEscape(w.ripRaw),
       jsonEscape(w.location),
       w.count
     )
