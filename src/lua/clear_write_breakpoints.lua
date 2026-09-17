@@ -1,24 +1,18 @@
 --[[
-  CE Lua: remove every active debugger breakpoint.
-
-  Invoked by src/handlers/write_breakpoint.ts via MCP ce_eval_lua on POC exit.
-  This POC only places bptWrite watches, so clearing the full breakpoint list
-  clears all write watches we created (plus any other BPs currently in CE).
-
-  Returns the number of addresses removed.
+  CE Lua: remove every active debugger breakpoint and force-continue the target.
 ]]
 
 function clearAllWriteBreakpoints()
   local list = debug_getBreakpointList()
-  if list == nil then
-    return 0
-  end
-
   local removed = 0
-  for _, address in ipairs(list) do
-    debug_removeBreakpoint(address)
-    removed = removed + 1
+  if list ~= nil then
+    for _, address in ipairs(list) do
+      if pcall(function() debug_removeBreakpoint(address) end) then
+        removed = removed + 1
+      end
+    end
   end
-
+  -- If the target is sitting on a hit, kick it so the game unfreezes.
+  pcall(function() debug_continueFromBreakpoint(co_run) end)
   return removed
 end

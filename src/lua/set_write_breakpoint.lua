@@ -1,11 +1,10 @@
 --[[
   CE Lua: set a single hardware write breakpoint (bptWrite).
 
-  Invoked by src/handlers/write_breakpoint.ts via MCP ce_eval_lua.
-  One active watch intended — call removeWriteBreakpoint on the previous address first.
+  Prefer timed monitorWrites() — persistent write BPs on hot addresses still
+  stutter even when continue is correct.
 
-  Always installs an auto-continue callback. A write BP without continue freezes
-  the target on every store to that address.
+  Continue policy: debug_continueFromBreakpoint(co_run) + return 1
 ]]
 
 function setWriteBreakpoint(addressSpec, size)
@@ -23,9 +22,12 @@ function setWriteBreakpoint(addressSpec, size)
     debugProcess()
   end
 
-  debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, function()
+  local function onHit()
     debug_continueFromBreakpoint(co_run)
     return 1
-  end)
+  end
+
+  debugger_onBreakpoint = onHit
+  debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, onHit)
   return string.format("0x%016X", address)
 end

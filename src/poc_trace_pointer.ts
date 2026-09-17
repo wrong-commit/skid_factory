@@ -27,7 +27,7 @@ import {
     type WriteDump,
 } from "./mcp/ce_tools.ts";
 import { monitorWrites, resolveMonitorWritesTypeAndSize } from "./handlers/monitor_writes.ts";
-import { followWriteAddress, clearAllWriteBreakpoints } from "./handlers/write_breakpoint.ts";
+import { clearAllWriteBreakpoints } from "./handlers/write_breakpoint.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -200,12 +200,12 @@ function printHelp(): void {
                                   types: ${CE_SCAN_TYPES.join(", ")}
   scan_results [limit=50]         ce_scan_results — list addresses from current scan
   reset_scan                      ce_scan_reset + clear local scan state
-  choose_address <loc|hex>        set write watch (e.g. 25C3260C038, 0x..., or game.exe+1234)
-  monitor_writes [addr] [type|size] [ms]  custom ce_monitor_writes via ce_eval_lua
+  choose_address <loc|hex>        select data address (no persistent BP — use monitor_writes)
+  monitor_writes [addr] [type|size] [ms]  timed write-watch collect via ce_eval_lua
                                   default: watched address, last scan type, 3000ms
   show_write_locations            same as monitor_writes using current watched address
   disassemble_watched             disassemble ASM around the watched address
-  follow_address <loc|hex> [type] move write watch to that instruction / address
+  follow_address <loc|hex> [type] select next address to investigate (no persistent BP)
                                   default type: last scan type (else int32)
   save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
@@ -312,7 +312,16 @@ async function pocTraceBaseAddress(
 
     // Begin CE search with ce_scan_first using console input value as starting value.
     // Filter in loop calling ce_scan_next until "choose_address" is entered.
-    for await (const line of rl) {
+    // `for await (const line of rl)` never redraws the prompt after console.log;
+    // question() writes "> " again once each command finishes.
+    while (true) {
+        let line: string;
+        try {
+            line = await rl.question("> ");
+        } catch {
+            // Interface closed (Ctrl+C / shutdown)
+            break;
+        }
         const cmd = line.trim();
         if (!cmd) continue;
 
@@ -417,10 +426,16 @@ async function pocTraceBaseAddress(
                 }
 
                 const chosen = normalizeAddressSpec(raw);
-                const watchType = lastScanType ?? "int32";
-                const resolved = await followWriteAddress(mcp, chosen, watched, watchType);
+                // Do NOT plant a persistent hardware BP here — on this CE build that
+                // freezes the game on the next write. Only arm BPs inside monitor_writes.
+                const cleared = await clearAllWriteBreakpoints(mcp);
+                if (cleared > 0) {
+                    console.log(`Cleared ${cleared} leftover breakpoint(s)`);
+                }
                 watched = chosen;
-                console.log(`Watching writes to ${watched} type=${watchType} (resolved ${resolved})`);
+                console.log(
+                    `Selected ${watched} type=${lastScanType ?? "int32"}. Run monitor_writes to find writers.`,
+                );
                 continue;
             }
 
@@ -468,11 +483,14 @@ async function pocTraceBaseAddress(
                     continue;
                 }
 
-                const resolved = await followWriteAddress(mcp, parsed.target, watched, parsed.type);
+                const cleared = await clearAllWriteBreakpoints(mcp);
+                if (cleared > 0) {
+                    console.log(`Cleared ${cleared} leftover breakpoint(s)`);
+                }
                 watched = parsed.target;
                 lastScanType = parsed.type;
                 console.log(
-                    `Cleared previous watch; now watching writes to ${watched} type=${parsed.type} (resolved ${resolved})`,
+                    `Selected ${watched} type=${parsed.type}. Run monitor_writes to find writers.`,
                 );
                 continue;
             }
@@ -516,7 +534,11 @@ const main = async (): Promise<void> => {
     // Connect to MCP server and validate tool list.
     // FIXME: optional — also smoke-test via Codex if you want parity with ~/.codex/config.toml
     const mcp = await connectCeMcp();
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+        prompt: "> ",
+    });
 
     let cleaningUp = false;
     const shutdown = async (reason: string): Promise<void> => {

@@ -1,21 +1,12 @@
 --[[
   CE Lua: find instruction RIPs that write to a data address.
 
-  Loaded and invoked by src/handlers/monitor_writes.ts via MCP ce_eval_lua.
-  Edit this file to change breakpoint behavior, hit shaping, or JSON fields.
+  Loaded by src/handlers/monitor_writes.ts via MCP ce_eval_lua.
 
-  Contract (return value of monitorWrites):
-    JSON string matching WriteDumpSchema:
-      {
-        "watched_address": "0x...",
-        "type": "int32",
-        "size": 4,
-        "writes": [ { "rip": "0x...", "ripRaw": "...", "location": "...", "count": N }, ... ]
-      }
-
-  Flow:
-    ensure debugging → one bptWrite hardware watch → sleep(durationMs)
-    → remove breakpoint → return deduped RIP hits with module+offset names
+  Continue policy (CE canonical — see Lua Debugging wiki / issue #911):
+    debug_continueFromBreakpoint(co_run)
+    return 1   -- we handled it; do NOT update debugger UI
+  return 0 means "break into the UI" and freezes the game for the user.
 ]]
 
 local function jsonEscape(s)
@@ -32,19 +23,31 @@ local function hexAddress(n)
   return string.format("0x%016X", n)
 end
 
---- Instruction pointer in a breakpoint callback (64-bit RIP, 32-bit EIP, or API).
 local function currentIP()
-  local ip = getInstructionPointer()
-  if type(ip) == "number" and ip ~= 0 then
-    return ip
-  end
-  if RIP ~= nil then
-    return RIP
-  end
-  if EIP ~= nil then
-    return EIP
+  if RIP ~= nil then return RIP end
+  if EIP ~= nil then return EIP end
+  if type(getInstructionPointer) == "function" then
+    local ok, ip = pcall(getInstructionPointer)
+    if ok and type(ip) == "number" and ip ~= 0 then return ip end
   end
   return nil
+end
+
+local function forceContinue()
+  pcall(function() debug_continueFromBreakpoint(co_run) end)
+end
+
+local function clearAllBreakpoints()
+  local existing = debug_getBreakpointList()
+  if existing == nil then return 0 end
+  local n = 0
+  for _, bp in ipairs(existing) do
+    if pcall(function() debug_removeBreakpoint(bp) end) then
+      n = n + 1
+    end
+  end
+  forceContinue()
+  return n
 end
 
 local SIZE_FROM_TYPE = {
@@ -62,11 +65,6 @@ local TYPE_FROM_SIZE = {
   [8] = "int64",
 }
 
---- Watch writes to `address` for `durationMs`, then return WriteDump JSON.
---- @param address number data address to watch
---- @param size number watch size in bytes (typically 4 for int32)
---- @param durationMs number how long to collect hits before removing the breakpoint
---- @param vtype string|nil re-mcp scan type (int32, float, ...); inferred from size if omitted
 function monitorWrites(address, size, durationMs, vtype)
   address = tonumber(address)
   durationMs = tonumber(durationMs) or 3000
@@ -82,16 +80,17 @@ function monitorWrites(address, size, durationMs, vtype)
     error("monitorWrites: address must be a number")
   end
 
+  clearAllBreakpoints()
+
   if not debug_isDebugging() then
     debugProcess()
   end
 
   local hits = {}
   local unknownCount = 0
+  local previousHandler = debugger_onBreakpoint
 
-  -- Keep the callback tiny: record IP, always continue. Errors here used to
-  -- skip debug_continueFromBreakpoint and freeze the game.
-  debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, function()
+  local function onHit()
     local ok, err = pcall(function()
       local rip = currentIP()
       if rip == nil then
@@ -106,16 +105,29 @@ function monitorWrites(address, size, durationMs, vtype)
       end
     end)
     if not ok then
-      -- Prefer continuing the target over surfacing callback errors mid-hit.
       print("[monitorWrites] breakpoint callback: " .. tostring(err))
     end
     debug_continueFromBreakpoint(co_run)
     return 1
-  end)
+  end
 
-  sleep(durationMs)
+  -- Install both global + per-BP callback (CE builds differ on which fires).
+  debugger_onBreakpoint = onHit
+  debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, onHit)
 
-  debug_removeBreakpoint(address)
+  -- Keep CE's main thread pumping so continues are processed.
+  local stopAt = getTickCount() + durationMs
+  while getTickCount() < stopAt do
+    if type(checkSynchronize) == "function" then
+      pcall(checkSynchronize)
+    end
+    sleep(10)
+  end
+
+  pcall(function() debug_removeBreakpoint(address) end)
+  clearAllBreakpoints()
+  debugger_onBreakpoint = previousHandler
+  forceContinue()
 
   local writes = {}
   for rip, entry in pairs(hits) do
