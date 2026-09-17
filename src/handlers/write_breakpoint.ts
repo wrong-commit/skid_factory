@@ -6,7 +6,7 @@
 
 import { readFile } from "node:fs/promises";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { CeTool, callTool } from "../mcp/ce_tools.ts";
+import { CeTool, callTool, ceScanTypeSize, type CeScanType } from "../mcp/ce_tools.ts";
 
 const REMOVE_LUA_URL = new URL("../lua/remove_write_breakpoint.lua", import.meta.url);
 const SET_LUA_URL = new URL("../lua/set_write_breakpoint.lua", import.meta.url);
@@ -55,14 +55,16 @@ return removeWriteBreakpoint(${luaStringLiteral(address)})
 
 /**
  * Set a hardware write breakpoint on `address`. Prefer removing any previous watch first.
+ * Watch size comes from the scan type (int32/float → 4, int64/double → 8, …).
  */
 export async function setWriteBreakpoint(
     mcp: Client,
     address: string,
-    size = 4,
+    type: CeScanType = "int32",
 ): Promise<string> {
+    const size = ceScanTypeSize(type);
     if (!Number.isInteger(size) || size <= 0) {
-        throw new Error(`Invalid size: ${size}`);
+        throw new Error(`Invalid size for type ${type}: ${size}`);
     }
 
     const luaSource = await readFile(SET_LUA_URL, "utf8");
@@ -106,10 +108,10 @@ export async function followWriteAddress(
     mcp: Client,
     target: string,
     previous?: string,
-    size = 4,
+    type: CeScanType = "int32",
 ): Promise<string> {
     if (previous && previous !== target) {
         await removeWriteBreakpoint(mcp, previous);
     }
-    return setWriteBreakpoint(mcp, target, size);
+    return setWriteBreakpoint(mcp, target, type);
 }

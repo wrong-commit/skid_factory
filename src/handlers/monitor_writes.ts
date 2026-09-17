@@ -6,21 +6,47 @@
 
 import { readFile } from "node:fs/promises";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { CeTool, WriteDumpSchema, callTool, type WriteDump } from "../mcp/ce_tools.ts";
+import {
+    CeTool,
+    WriteDumpSchema,
+    callTool,
+    ceScanTypeFromSize,
+    ceScanTypeSize,
+    type CeScanType,
+    type WriteDump,
+} from "../mcp/ce_tools.ts";
 
 const MONITOR_WRITES_LUA_URL = new URL("../lua/monitor_writes.lua", import.meta.url);
 
 export type MonitorWritesArgs = {
     /** Data address to watch (hex `0x...` or decimal string/number). */
     address: string | number;
-    /** Watch size in bytes. Default 4 (int32). */
+    /** re-mcp / CE scan type. Default int32 (or inferred from `size`). */
+    type?: CeScanType;
+    /** Watch size in bytes. Default from `type`, else 4. */
     size?: number;
     /** How long CE collects hits before removing the breakpoint. Default 3000. */
     durationMs?: number;
 };
 
-const DEFAULT_SIZE = 4;
+const DEFAULT_TYPE: CeScanType = "int32";
 const DEFAULT_DURATION_MS = 3000;
+
+export function resolveMonitorWritesTypeAndSize(args: {
+    type?: CeScanType;
+    size?: number;
+}): { type: CeScanType; size: number } {
+    if (args.type !== undefined) {
+        return { type: args.type, size: args.size ?? ceScanTypeSize(args.type) };
+    }
+    if (args.size !== undefined) {
+        return {
+            type: ceScanTypeFromSize(args.size) ?? DEFAULT_TYPE,
+            size: args.size,
+        };
+    }
+    return { type: DEFAULT_TYPE, size: ceScanTypeSize(DEFAULT_TYPE) };
+}
 
 /** Parse address into a Lua-safe unsigned integer literal. */
 export function parseMonitorAddress(address: string | number): bigint {
@@ -56,6 +82,7 @@ export function buildMonitorWritesEvalCode(
     address: bigint,
     size: number,
     durationMs: number,
+    type: CeScanType,
 ): string {
     if (!Number.isInteger(size) || size <= 0) {
         throw new Error(`Invalid size: ${size}`);
@@ -66,7 +93,7 @@ export function buildMonitorWritesEvalCode(
 
     return `${luaSource}
 
-return monitorWrites(${address.toString(10)}, ${size}, ${durationMs})
+return monitorWrites(${address.toString(10)}, ${size}, ${durationMs}, ${JSON.stringify(type)})
 `;
 }
 
@@ -97,11 +124,11 @@ export async function monitorWrites(
     args: MonitorWritesArgs,
 ): Promise<WriteDump> {
     const address = parseMonitorAddress(args.address);
-    const size = args.size ?? DEFAULT_SIZE;
+    const { type, size } = resolveMonitorWritesTypeAndSize(args);
     const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
 
     const luaSource = await loadMonitorWritesLua();
-    const code = buildMonitorWritesEvalCode(luaSource, address, size, durationMs);
+    const code = buildMonitorWritesEvalCode(luaSource, address, size, durationMs, type);
 
     const evalResult = await callTool(mcp, CeTool.EvalLua, { code });
     const jsonText = extractEvalLuaText(evalResult);

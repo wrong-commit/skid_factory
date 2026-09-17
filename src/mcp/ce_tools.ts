@@ -22,8 +22,89 @@ export const CeTool = {
 
 export type CeToolName = (typeof CeTool)[keyof typeof CeTool];
 
-export const CeScanTypeSchema = z.enum(["int32"]);
+/**
+ * Value types accepted by re-mcp `ce_scan_first` / `ce_read_memory` / `ce_write_memory`.
+ * Source: mcp-cheat-engine/src/tools/ceTools.ts `valueType`.
+ *
+ * Lua `SCAN_TYPE_MAP` (bridge.lua) maps these onto CE `TVariableType`:
+ *   byte/int8 → vtByte, int16 → vtWord, int32/int → vtDword,
+ *   int64 → vtQword, float → vtSingle, double → vtDouble, string → vtString.
+ * `uint8` and `wstring` are in the MCP enum but not in SCAN_TYPE_MAP (scan falls back to vtDword).
+ * CE also has vtBinary / vtAll / vtGrouped / vtByteArray (aob); re-mcp does not expose those on ce_scan_first.
+ */
+export const CE_SCAN_TYPES = [
+    "byte",
+    "int8",
+    "uint8",
+    "int16",
+    "int32",
+    "int",
+    "int64",
+    "float",
+    "double",
+    "string",
+    "wstring",
+] as const;
+
+export const CeScanTypeSchema = z.enum(CE_SCAN_TYPES);
 export type CeScanType = z.infer<typeof CeScanTypeSchema>;
+
+/** Cheat Engine UI names that map onto a re-mcp scan type. */
+export const CE_SCAN_TYPE_ALIASES: Readonly<Record<string, CeScanType>> = {
+    word: "int16",
+    "2byte": "int16",
+    "2bytes": "int16",
+    dword: "int32",
+    "4byte": "int32",
+    "4bytes": "int32",
+    qword: "int64",
+    "8byte": "int64",
+    "8bytes": "int64",
+    single: "float",
+};
+
+export function resolveCeScanType(raw: string): CeScanType | undefined {
+    const key = raw.trim().toLowerCase();
+    if ((CE_SCAN_TYPES as readonly string[]).includes(key)) {
+        return key as CeScanType;
+    }
+    return CE_SCAN_TYPE_ALIASES[key];
+}
+
+/** Hardware watch sizes for `debug_setBreakpoint` (1/2/4/8). */
+export const CE_SCAN_TYPE_SIZES: Readonly<Record<CeScanType, number>> = {
+    byte: 1,
+    int8: 1,
+    uint8: 1,
+    int16: 2,
+    int32: 4,
+    int: 4,
+    int64: 8,
+    float: 4,
+    double: 8,
+    string: 4,
+    wstring: 4,
+};
+
+export function ceScanTypeSize(type: CeScanType): number {
+    return CE_SCAN_TYPE_SIZES[type];
+}
+
+/** Best-effort reverse map when only a byte size is known (4 → int32, not float). */
+export function ceScanTypeFromSize(size: number): CeScanType | undefined {
+    switch (size) {
+        case 1:
+            return "byte";
+        case 2:
+            return "int16";
+        case 4:
+            return "int32";
+        case 8:
+            return "int64";
+        default:
+            return undefined;
+    }
+}
 
 /** Args for ce_scan_first (re-mcp). Process must already be attached in CE. */
 export const CeScanFirstArgsSchema = z.object({
@@ -94,6 +175,8 @@ export const WriteHitSchema = z.object({
 
 export const WriteDumpSchema = z.object({
     watched_address: z.string(),
+    type: CeScanTypeSchema,
+    size: z.number().int().positive(),
     writes: z.array(WriteHitSchema),
 });
 
@@ -109,18 +192,21 @@ export const DisassembleResultSchema = z.union([
     z.record(z.string(), z.unknown()),
 ]);
 
-/**
- * FIXME: confirm ce_eval_lua arg/result field names against the installed CE MCP bridge.
- * Handler expects a string (WriteDump JSON) either as the payload itself or under result/value/output.
- */
 export const CeEvalLuaArgsSchema = z.object({
     code: z.string().min(1),
 });
 
+/**
+ * Live `ce_eval_lua` payload from bridge.lua `eval_lua`.
+ * MCP `content[].text` is JSON such as `{ "ok": true, "result": 2, "type": "number" }`.
+ * `result` is a Lua number/boolean/string (tables are stringified); nil omits `result`/`type`.
+ */
 export const CeEvalLuaResultSchema = z.union([
     z.string(),
     z.object({
-        result: z.string().optional(),
+        ok: z.boolean().optional(),
+        result: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+        type: z.string().optional(),
         value: z.string().optional(),
         output: z.string().optional(),
     }),
