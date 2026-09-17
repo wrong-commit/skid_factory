@@ -13,10 +13,10 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
 1. Download Cheat Engine (https://www.cheatengine.org/downloads.php)
 2. Download Ghidra (https://github.com/NationalSecurityAgency/ghidra/releases)
 3. Install cheat-engine-mcp (https://github.com/Travers9483/mcp-cheat-engine) 
-4. Set up MCP bridges for cheat-engine-mcp
+4. Set up MCP bridges for cheat-engine-mcp by running `git clone https://github.com/wrong-commit/mcp-cheat-engine.git`
 5. Install Not a Hero from Steam/GOG
-6. Install Codex CLI
-7. Configure MCP serve in Codex `codex mcp add ...`
+6. Install Cursor CLI (https://cursor.com/cli)
+7. Configure MCP serve in Cursor e.g `cursor mcp add ...`
 
 # Execution Instructions
 

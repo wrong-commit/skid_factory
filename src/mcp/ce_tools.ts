@@ -1,6 +1,7 @@
 /**
  * Typed Cheat Engine MCP tool catalog + Zod result parsing.
  * Design: specs/SPEC_MCP_CALL_TYPE_SAFETY.md
+ * Aligned with mcp-cheat-engine (re-mcp) ce_* tools.
  */
 
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -10,12 +11,13 @@ import { z } from "zod";
 export const CeTool = {
     ScanFirst: "ce_scan_first",
     ScanNext: "ce_scan_next",
+    ScanResults: "ce_scan_results",
     ScanReset: "ce_scan_reset",
     /** Escape hatch: run arbitrary CE Lua (used by custom ce_monitor_writes). */
     EvalLua: "ce_eval_lua",
     /** @deprecated Prefer custom handler monitorWrites → ce_eval_lua. */
     GetWriteLocations: "get_write_locations",
-    Disassemble: "disassemble",
+    Disassemble: "ce_disassemble",
 } as const;
 
 export type CeToolName = (typeof CeTool)[keyof typeof CeTool];
@@ -23,24 +25,62 @@ export type CeToolName = (typeof CeTool)[keyof typeof CeTool];
 export const CeScanTypeSchema = z.enum(["int32"]);
 export type CeScanType = z.infer<typeof CeScanTypeSchema>;
 
-export const CeScanArgsSchema = z.object({
-    pid: z.number().int().positive(),
-    value: z.number(),
-    type: CeScanTypeSchema,
+/** Args for ce_scan_first (re-mcp). Process must already be attached in CE. */
+export const CeScanFirstArgsSchema = z.object({
+    type: CeScanTypeSchema.default("int32"),
+    scanOption: z
+        .enum(["exact", "bigger", "smaller", "between", "unknown"])
+        .default("exact"),
+    value: z.union([z.string(), z.number()]).optional(),
+    value2: z.union([z.string(), z.number()]).optional(),
+    hex: z.boolean().default(false),
 });
 
-/** FIXME: replace with real ce_scan_* response shape from the CE MCP bridge. */
-export const CeScanResultSchema = z.object({
+/** Args for ce_scan_next (re-mcp). */
+export const CeScanNextArgsSchema = z.object({
+    scanOption: z
+        .enum([
+            "exact",
+            "bigger",
+            "smaller",
+            "between",
+            "increased",
+            "decreased",
+            "changed",
+            "unchanged",
+        ])
+        .default("exact"),
+    value: z.union([z.string(), z.number()]).optional(),
+    value2: z.union([z.string(), z.number()]).optional(),
+    hex: z.boolean().default(false),
+});
+
+/** ce_scan_first / ce_scan_next return `{ count }`. */
+export const CeScanCountResultSchema = z.object({
     count: z.number().int().nonnegative(),
-    addresses: z.array(z.string()).optional(),
 });
 
-/** Args for clearing an in-progress value scan for a process. */
-export const CeScanResetArgsSchema = z.object({
-    pid: z.number().int().positive(),
+export const CeScanResultsArgsSchema = z.object({
+    limit: z.number().int().min(1).max(1000).default(50),
 });
 
-/** FIXME: replace with real ce_scan_reset response shape from the CE MCP bridge. */
+/** ce_scan_results return shape from bridge.lua. */
+export const CeScanHitSchema = z.object({
+    address: z.string(),
+    value: z.union([z.string(), z.number()]),
+});
+
+export const CeScanResultsResultSchema = z.object({
+    total: z.number().int().nonnegative(),
+    returned: z.number().int().nonnegative(),
+    results: z.array(CeScanHitSchema),
+});
+
+export type CeScanResultsResult = z.infer<typeof CeScanResultsResultSchema>;
+
+/** ce_scan_reset takes no args. */
+export const CeScanResetArgsSchema = z.object({});
+
 export const CeScanResetResultSchema = z.object({
     ok: z.boolean().default(true),
 });
@@ -58,11 +98,15 @@ export const WriteDumpSchema = z.object({
 
 export type WriteDump = z.infer<typeof WriteDumpSchema>;
 
-/** FIXME: replace with real disassemble response shape from the CE MCP bridge. */
-export const DisassembleResultSchema = z.object({
-    address: z.string(),
-    asm: z.string(),
-});
+/** FIXME: tighten against a live ce_disassemble payload. */
+export const DisassembleResultSchema = z.union([
+    z.object({
+        address: z.string(),
+        asm: z.string(),
+    }),
+    z.array(z.record(z.string(), z.unknown())),
+    z.record(z.string(), z.unknown()),
+]);
 
 /**
  * FIXME: confirm ce_eval_lua arg/result field names against the installed CE MCP bridge.
@@ -83,16 +127,19 @@ export const CeEvalLuaResultSchema = z.union([
 
 /**
  * Per-tool args + Zod result schema. Keys MUST match live MCP tool names.
- * FIXME: rename GetWriteLocations / Disassemble keys when the bridge's real names are known.
  */
 export const ceToolCatalog = {
     [CeTool.ScanFirst]: {
-        args: CeScanArgsSchema,
-        result: CeScanResultSchema,
+        args: CeScanFirstArgsSchema,
+        result: CeScanCountResultSchema,
     },
     [CeTool.ScanNext]: {
-        args: CeScanArgsSchema,
-        result: CeScanResultSchema,
+        args: CeScanNextArgsSchema,
+        result: CeScanCountResultSchema,
+    },
+    [CeTool.ScanResults]: {
+        args: CeScanResultsArgsSchema,
+        result: CeScanResultsResultSchema,
     },
     [CeTool.ScanReset]: {
         args: CeScanResetArgsSchema,
@@ -107,7 +154,10 @@ export const ceToolCatalog = {
         result: WriteDumpSchema,
     },
     [CeTool.Disassemble]: {
-        args: z.object({ address: z.string().min(1) }),
+        args: z.object({
+            address: z.union([z.string(), z.number()]),
+            count: z.number().int().min(1).max(200).optional().default(15),
+        }),
         result: DisassembleResultSchema,
     },
 } as const;
@@ -116,7 +166,7 @@ export type CeToolCatalog = typeof ceToolCatalog;
 
 export type CeToolMap = {
     [K in CeToolName]: {
-        args: z.infer<CeToolCatalog[K]["args"]>;
+        args: z.input<CeToolCatalog[K]["args"]>;
         result: z.infer<CeToolCatalog[K]["result"]>;
     };
 };
@@ -124,6 +174,7 @@ export type CeToolMap = {
 export const REQUIRED_CE_TOOLS: readonly CeToolName[] = [
     CeTool.ScanFirst,
     CeTool.ScanNext,
+    CeTool.ScanResults,
     CeTool.ScanReset,
     CeTool.EvalLua,
     CeTool.Disassemble,

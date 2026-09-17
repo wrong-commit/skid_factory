@@ -58,8 +58,8 @@ function parsePid(argv: string[]): number {
 async function connectCeMcp(): Promise<Client> {
     const transport = new StdioClientTransport({
         // FIXME: command + args for cheat-engine-mcp / mcp-cheat-engine bridge
-        command: "npx",
-        args: ["-y", "FIXME_CE_MCP_PACKAGE"],
+        command: "npm",
+        args: ["run", "mcp:start"],
     });
 
     const client = new Client({ name: "poc-trace-pointer", version: "0.1.0" });
@@ -113,6 +113,7 @@ async function appendBaseAddress(entry: BaseAddressEntry): Promise<void> {
 function printHelp(): void {
     console.log(`Commands:
   scan int32 <int32>              ce_scan_first (or next filter after first scan)
+  scan_results [limit=50]         ce_scan_results — list addresses from current scan
   reset_scan                      ce_scan_reset + clear local scan state
   choose_address                  print candidates; set write watch on chosen address
   monitor_writes [addr] [size] [ms]  custom ce_monitor_writes via ce_eval_lua (default: watched, size=4, 3000ms)
@@ -192,15 +193,36 @@ async function pocTraceBaseAddress(
         }
 
         if (cmd === "quit" || cmd === "exit" || cmd === "cancel") {
-            const removed = await clearAllWriteBreakpoints(mcp);
-            console.log(`Cleared ${removed} write breakpoint(s)`);
             break;
         }
 
         if (cmd === "reset_scan") {
-            await callTool(mcp, CeTool.ScanReset, { pid });
+            await callTool(mcp, CeTool.ScanReset, {});
             hasScanned = false;
             console.log("Scan state reset; next scan int32 will call ce_scan_first");
+            continue;
+        }
+
+        // scan_results [limit] → ce_scan_results
+        const scanResultsCmd = /^scan_results(?:\s+(\d+))?$/i.exec(cmd);
+        if (scanResultsCmd) {
+            if (!hasScanned) {
+                console.error("No active scan. Run scan int32 <value> first.");
+                continue;
+            }
+            const limit =
+                scanResultsCmd[1] !== undefined ? Number(scanResultsCmd[1]) : 50;
+            if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+                console.error("Usage: scan_results [limit=1..1000]");
+                continue;
+            }
+            const dump = await callTool(mcp, CeTool.ScanResults, { limit });
+            console.log(
+                `Scan results: total=${dump.total} returned=${dump.returned}`,
+            );
+            for (const hit of dump.results) {
+                console.log(`  ${hit.address}  =  ${hit.value}`);
+            }
             continue;
         }
 
@@ -210,18 +232,19 @@ async function pocTraceBaseAddress(
         if (scanInt32) {
             const value = Number(scanInt32[1]);
             if (!hasScanned) {
-                await callTool(mcp, CeTool.ScanFirst, {
-                    pid,
+                const first = await callTool(mcp, CeTool.ScanFirst, {
                     value,
                     type: "int32",
+                    scanOption: "exact",
                 });
                 hasScanned = true;
+                console.log(`ce_scan_first: count=${first.count}`);
             } else {
-                await callTool(mcp, CeTool.ScanNext, {
-                    pid,
+                const next = await callTool(mcp, CeTool.ScanNext, {
                     value,
-                    type: "int32",
+                    scanOption: "exact",
                 });
+                console.log(`ce_scan_next: count=${next.count}`);
             }
             continue;
         }
@@ -311,21 +334,50 @@ async function pocTraceBaseAddress(
     }
 }
 
+async function clearBreakpointsOnExit(mcp: Client): Promise<void> {
+    try {
+        const removed = await clearAllWriteBreakpoints(mcp);
+        console.log(`Cleared ${removed} write breakpoint(s)`);
+    } catch (err) {
+        console.error("Failed to clear write breakpoints on exit:", err);
+    }
+}
+
 const main = async (pid: number): Promise<void> => {
     // Connect to MCP server and validate tool list.
     // FIXME: optional — also smoke-test via Codex if you want parity with ~/.codex/config.toml
     const mcp = await connectCeMcp();
     const rl = createInterface({ input: process.stdin, output: process.stdout });
 
-    console.log(`POC trace pointer attached to pid=${pid}`);
+    let cleaningUp = false;
+    const shutdown = async (reason: string): Promise<void> => {
+        if (cleaningUp) return;
+        cleaningUp = true;
+        console.log(`\nShutting down (${reason})...`);
+        rl.close();
+        await clearBreakpointsOnExit(mcp);
+        await mcp.close();
+    };
+
+    process.once("SIGINT", () => {
+        void shutdown("Ctrl+C").then(() => {
+            process.exit(0);
+        });
+    });
+
+    console.log(`POC trace pointer attached to RE MCP server`);
     printHelp();
 
     try {
         await pocTraceBaseAddress(pid, mcp, rl);
     } finally {
-        rl.close();
-        // FIXME: confirm Client.close() / transport dispose API for your SDK version
-        await mcp.close();
+        if (!cleaningUp) {
+            cleaningUp = true;
+            rl.close();
+            // Normal exit (quit/exit/cancel/save_base_address): clear breakpoints then close MCP
+            await clearBreakpointsOnExit(mcp);
+            await mcp.close();
+        }
     }
 };
 
