@@ -129,6 +129,7 @@ function printHelp(): void {
   reset_scan                      restart scanning state
   choose_address                  print candidates; set write watch on chosen address
   show_write_locations            dump writers JSON for current watch
+  disassemble_watched             disassemble ASM around the watched address
   follow_address <loc|hex>        move write watch to that instruction / address
   save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
@@ -202,6 +203,7 @@ async function pocTraceBaseAddress(
             continue;
         }
 
+        // Dump the write locations for the watched address
         if (cmd === "show_write_locations") {
             if (!watched) {
                 console.error("No watched address yet. Run choose_address first.");
@@ -227,6 +229,21 @@ async function pocTraceBaseAddress(
             continue;
         }
 
+        // FIXME: add "disassemble_watched" command to disassemble the watched address
+        if (cmd === "disassemble_watched") {
+            if (!watched) {
+                console.error("No watched address yet. Run choose_address first.");
+                continue;
+            }
+            // FIXME: replace tool name with disassemble / equivalent
+            const disassemble = await callTool(mcp, "FIXME_DISASSEMBLE", {
+                address: watched,
+            });
+            console.log(disassemble);
+            continue;
+        }
+
+        // Follow the address to the next writer
         if (cmd.startsWith("follow_address ")) {
             const target = cmd.slice("follow_address ".length).trim();
             if (!target) {
