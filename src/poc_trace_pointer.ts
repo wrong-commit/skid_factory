@@ -200,13 +200,11 @@ function printHelp(): void {
                                   types: ${CE_SCAN_TYPES.join(", ")}
   scan_results [limit=50]         ce_scan_results — list addresses from current scan
   reset_scan                      ce_scan_reset + clear local scan state
-  choose_address <loc|hex>        select data address (no persistent BP — use monitor_writes)
   monitor_writes [addr] [type|size] [ms]  timed write-watch collect via ce_eval_lua
                                   default: watched address, last scan type, 3000ms
   show_write_locations            same as monitor_writes using current watched address
-  disassemble_watched             disassemble ASM around the watched address
-  follow_address <loc|hex> [type] select next address to investigate (no persistent BP)
-                                  default type: last scan type (else int32)
+  disassemble <loc|hex> [count]   disassemble at an instruction RIP / code address
+                                  tip: use a rip from monitor_writes, not the data address
   save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
   quit | exit | cancel            exit without saving`);
@@ -306,7 +304,7 @@ async function pocTraceBaseAddress(
     mcp: Client,
     rl: ReturnType<typeof createInterface>,
 ): Promise<void> {
-    let watched: string | undefined;
+    // let watched: string | undefined;
     let hasScanned = false;
     let lastScanType: CeScanType | undefined;
 
@@ -404,96 +402,129 @@ async function pocTraceBaseAddress(
             }
 
             // choose_address <hex|module+offset> → set write watch on that location
-            if (cmd === "choose_address" || cmd.startsWith("choose_address ")) {
-                const raw = cmd === "choose_address"
-                    ? ""
-                    : cmd.slice("choose_address ".length).trim();
-                if (!raw) {
-                    console.error("Usage: choose_address <hex|module+offset>");
-                    console.error("  examples: choose_address 25C3260C038");
-                    console.error("            choose_address 0x25C3260C038");
-                    console.error("            choose_address game.exe+1234");
-                    if (hasScanned) {
-                        const dump = await callTool(mcp, CeTool.ScanResults, { limit: 50 });
-                        console.log(
-                            `Current scan candidates: total=${dump.total} returned=${dump.returned}`,
-                        );
-                        for (const hit of dump.results) {
-                            console.log(`  ${hit.address}  =  ${hit.value}`);
-                        }
-                    }
+            // if (cmd === "choose_address" || cmd.startsWith("choose_address ")) {
+            //     const raw = cmd === "choose_address"
+            //         ? ""
+            //         : cmd.slice("choose_address ".length).trim();
+            //     if (!raw) {
+            //         console.error("Usage: choose_address <hex|module+offset>");
+            //         console.error("  examples: choose_address 25C3260C038");
+            //         console.error("            choose_address 0x25C3260C038");
+            //         console.error("            choose_address game.exe+1234");
+            //         if (hasScanned) {
+            //             const dump = await callTool(mcp, CeTool.ScanResults, { limit: 50 });
+            //             console.log(
+            //                 `Current scan candidates: total=${dump.total} returned=${dump.returned}`,
+            //             );
+            //             for (const hit of dump.results) {
+            //                 console.log(`  ${hit.address}  =  ${hit.value}`);
+            //             }
+            //         }
+            //         continue;
+            //     }
+
+            //     const chosen = normalizeAddressSpec(raw);
+            //     // Do NOT plant a persistent hardware BP here — on this CE build that
+            //     // freezes the game on the next write. Only arm BPs inside monitor_writes.
+            //     const cleared = await clearAllWriteBreakpoints(mcp);
+            //     if (cleared > 0) {
+            //         console.log(`Cleared ${cleared} leftover breakpoint(s)`);
+            //     }
+            //     watched = chosen;
+            //     console.log(
+            //         `Selected ${watched} type=${lastScanType ?? "int32"}. Run monitor_writes to find writers.`,
+            //     );
+            //     continue;
+            // }
+
+            // // Dump the write locations for the watched address (custom ce_monitor_writes)
+            // if (
+            //     cmd === "show_write_locations" ||
+            //     cmd === "monitor_writes" ||
+            //     cmd.startsWith("monitor_writes ")
+            // ) {
+            //     const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
+            //     if (!monitorArgs) {
+            //         continue;
+            //     }
+            //     watched = monitorArgs.address;
+            //     console.log(
+            //         `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
+            //     );
+            //     const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
+            //     console.log(JSON.stringify(dump, null, 2));
+
+            //     // FIXME: optional — ask Codex which writer to follow next
+            //     // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
+            //     // console.log(suggestion);
+            //     continue;
+            // }
+
+            // if (cmd === "disassemble_watched" || cmd.startsWith("disassemble_watched ")) {
+            //     if (!watched) {
+            //         console.error("No watched address yet. Run choose_address first.");
+            //         continue;
+            //     }
+            //     const countArg = cmd.slice("disassemble_watched".length).trim();
+            //     const count = countArg !== "" ? Number(countArg) : 15;
+            //     if (!Number.isInteger(count) || count < 1 || count > 200) {
+            //         console.error("Usage: disassemble_watched [count=1..200]");
+            //         continue;
+            //     }
+            //     console.log(
+            //         `Note: watched ${watched} is a data address; for code use: disassemble <rip from monitor_writes>`,
+            //     );
+            //     const disassemble = await callTool(mcp, CeTool.Disassemble, {
+            //         address: watched,
+            //         count,
+            //     });
+            //     console.log(disassemble);
+            //     continue;
+            // }
+
+            if (cmd === "disassemble" || cmd.startsWith("disassemble ")) {
+                const rest = cmd === "disassemble" ? "" : cmd.slice("disassemble ".length).trim();
+                const parts = rest === "" ? [] : rest.split(/\s+/);
+                const rawAddr = parts[0];
+                if (!rawAddr) {
+                    console.error("Usage: disassemble <loc|hex> [count=15]");
+                    console.error("  example: disassemble game.exe+1234");
+                    console.error("           disassemble 0x7FF612341234 20");
                     continue;
                 }
-
-                const chosen = normalizeAddressSpec(raw);
-                // Do NOT plant a persistent hardware BP here — on this CE build that
-                // freezes the game on the next write. Only arm BPs inside monitor_writes.
-                const cleared = await clearAllWriteBreakpoints(mcp);
-                if (cleared > 0) {
-                    console.log(`Cleared ${cleared} leftover breakpoint(s)`);
-                }
-                watched = chosen;
-                console.log(
-                    `Selected ${watched} type=${lastScanType ?? "int32"}. Run monitor_writes to find writers.`,
-                );
-                continue;
-            }
-
-            // Dump the write locations for the watched address (custom ce_monitor_writes)
-            if (
-                cmd === "show_write_locations" ||
-                cmd === "monitor_writes" ||
-                cmd.startsWith("monitor_writes ")
-            ) {
-                const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
-                if (!monitorArgs) {
+                const count = parts[1] !== undefined ? Number(parts[1]) : 15;
+                if (!Number.isInteger(count) || count < 1 || count > 200) {
+                    console.error("Usage: disassemble <loc|hex> [count=1..200]");
                     continue;
                 }
-                watched = monitorArgs.address;
-                console.log(
-                    `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
-                );
-                const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
-                console.log(JSON.stringify(dump, null, 2));
-
-                // FIXME: optional — ask Codex which writer to follow next
-                // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
-                // console.log(suggestion);
-                continue;
-            }
-
-            if (cmd === "disassemble_watched") {
-                if (!watched) {
-                    console.error("No watched address yet. Run choose_address first.");
-                    continue;
-                }
-                // FIXME: confirm CeTool.Disassemble matches the live MCP tool name
+                const address = normalizeAddressSpec(rawAddr);
                 const disassemble = await callTool(mcp, CeTool.Disassemble, {
-                    address: watched,
+                    address,
+                    count,
                 });
                 console.log(disassemble);
                 continue;
             }
 
             // Follow the address to the next writer
-            if (cmd === "follow_address" || cmd.startsWith("follow_address ")) {
-                const parsed = parseFollowAddressCommand(cmd, lastScanType);
-                if (!parsed || "error" in parsed) {
-                    console.error(parsed?.error ?? "Usage: follow_address <loc|hex> [type]");
-                    continue;
-                }
+            // if (cmd === "follow_address" || cmd.startsWith("follow_address ")) {
+            //     const parsed = parseFollowAddressCommand(cmd, lastScanType);
+            //     if (!parsed || "error" in parsed) {
+            //         console.error(parsed?.error ?? "Usage: follow_address <loc|hex> [type]");
+            //         continue;
+            //     }
 
-                const cleared = await clearAllWriteBreakpoints(mcp);
-                if (cleared > 0) {
-                    console.log(`Cleared ${cleared} leftover breakpoint(s)`);
-                }
-                watched = parsed.target;
-                lastScanType = parsed.type;
-                console.log(
-                    `Selected ${watched} type=${parsed.type}. Run monitor_writes to find writers.`,
-                );
-                continue;
-            }
+            //     const cleared = await clearAllWriteBreakpoints(mcp);
+            //     if (cleared > 0) {
+            //         console.log(`Cleared ${cleared} leftover breakpoint(s)`);
+            //     }
+            //     watched = parsed.target;
+            //     lastScanType = parsed.type;
+            //     console.log(
+            //         `Selected ${watched} type=${parsed.type}. Run monitor_writes to find writers.`,
+            //     );
+            //     continue;
+            // }
 
             if (cmd.startsWith("save_base_address ")) {
                 const rest = cmd.slice("save_base_address ".length).trim();

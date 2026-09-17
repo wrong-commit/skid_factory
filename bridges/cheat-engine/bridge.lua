@@ -281,13 +281,22 @@ handlers.disassemble = function(p)
   local cur = addr
   for i = 1, count do
     local d = disassemble(cur)
-    local addr_s, bytes_s, op_s, extra_s
+    -- Returns: address (often symbolic or empty), opcode, bytes, extra (often hex address)
+    local addr_s, op_s, bytes_s, extra_s
     if splitDisassembledString then
-      addr_s, bytes_s, op_s, extra_s = splitDisassembledString(d)
+      addr_s, op_s, bytes_s, extra_s = splitDisassembledString(d)
+    end
+    local numeric = string.format("%X", cur)
+    local resolved = addr_s
+    if resolved == nil or resolved == "" then
+      resolved = (extra_s ~= nil and extra_s ~= "" and extra_s) or numeric
     end
     out[#out+1] = {
-      address = string.format("%X", cur),
-      bytes = bytes_s, opcode = op_s, comment = extra_s, raw = d,
+      address = resolved,
+      bytes = bytes_s or "",
+      opcode = op_s or "",
+      comment = extra_s or "",
+      raw = d,
     }
     local size = getInstructionSize and getInstructionSize(cur) or 1
     if not size or size <= 0 then break end
