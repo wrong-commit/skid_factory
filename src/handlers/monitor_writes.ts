@@ -19,7 +19,7 @@ import {
 const MONITOR_WRITES_LUA_URL = new URL("../lua/monitor_writes.lua", import.meta.url);
 
 export type MonitorWritesArgs = {
-    /** Data address to watch (hex `0x...` or decimal string/number). */
+    /** Data address to watch (hex `0x...` / bare hex like `0DE216C8`, or decimal string/number). */
     address: string | number;
     /** re-mcp / CE scan type. Default int32 (or inferred from `size`). */
     type?: CeScanType;
@@ -58,14 +58,20 @@ export function parseMonitorAddress(address: string | number): bigint {
     }
 
     const trimmed = address.trim();
+    // Explicit 0x... hex
     if (/^0x[0-9a-fA-F]+$/i.test(trimmed)) {
         return BigInt(trimmed);
     }
+    // Bare hex from CE (e.g. 0DE216C8) — has A–F so it cannot be decimal
+    if (/^[0-9A-Fa-f]+$/i.test(trimmed) && /[A-Fa-f]/.test(trimmed)) {
+        return BigInt(`0x${trimmed}`);
+    }
+    // Decimal digits only
     if (/^\d+$/.test(trimmed)) {
         return BigInt(trimmed);
     }
     throw new Error(
-        `Invalid monitor address: ${JSON.stringify(address)} (expected hex 0x... or decimal)`,
+        `Invalid monitor address: ${JSON.stringify(address)} (expected hex 0x... / bare hex like 0DE216C8, or decimal)`,
     );
 }
 
