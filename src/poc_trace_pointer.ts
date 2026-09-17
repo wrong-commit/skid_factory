@@ -7,6 +7,7 @@
 //
 // Architecture: Node REPL owns the human control loop; MCP client talks to Cheat Engine;
 // optional Codex/LLM is only for reasoning prompts (not the scan filter loop).
+// MCP call type safety: specs/SPEC_MCP_CALL_TYPE_SAFETY.md
 
 import { execFile } from "node:child_process";
 import { readFile, writeFile } from "node:fs/promises";
@@ -16,19 +17,16 @@ import { promisify } from "node:util";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import {
+    CeTool,
+    REQUIRED_CE_TOOLS,
+    callTool,
+    type WriteDump,
+} from "./mcp/ce_tools.ts";
 
 const execFileAsync = promisify(execFile);
 
 const BASE_ADDRESSES_PATH = "base_addresses.json";
-
-type WriteDump = {
-    watched_address: string;
-    writes: Array<{
-        rip: string;
-        location: string;
-        count: number;
-    }>;
-};
 
 type BaseAddressEntry = {
     base: string;
@@ -66,27 +64,14 @@ async function connectCeMcp(): Promise<Client> {
     await client.connect(transport);
 
     const { tools } = await client.listTools();
-    // FIXME: assert against the real scan / watch tool names your bridge exposes
-    if (!tools.some((t) => t.name === "ce_scan_first")) {
+    const available = new Set(tools.map((t) => t.name));
+    const missing = REQUIRED_CE_TOOLS.filter((name) => !available.has(name));
+    if (missing.length > 0) {
         throw new Error(
-            `CE MCP connected but no ce_scan_first tool found. Tools: ${tools.map((t) => t.name).join(", ") || "(none)"}`,
+            `CE MCP missing required tools: ${missing.join(", ")}. Available: ${[...available].join(", ") || "(none)"}`,
         );
     }
     return client;
-}
-
-async function callTool(
-    client: Client,
-    name: string,
-    args: Record<string, unknown>,
-): Promise<unknown> {
-    const result = await client.callTool({ name, arguments: args });
-    // FIXME: parse MCP CallToolResult content (text/JSON) into typed values
-    console.log(`MCP RESULT DEBUG:\n${JSON.stringify(result, undefined, 2)}`)
-
-
-
-    return result;
 }
 
 /**
@@ -174,16 +159,14 @@ async function pocTraceBaseAddress(
         if (scanInt32) {
             const value = Number(scanInt32[1]);
             if (!hasScanned) {
-                // FIXME: map to real tool name + arg schema (pid, value, type, …)
-                await callTool(mcp, "ce_scan_first", {
+                await callTool(mcp, CeTool.ScanFirst, {
                     pid,
                     value,
                     type: "int32",
                 });
                 hasScanned = true;
             } else {
-                // FIXME: map to real ce_scan_next / filter tool
-                await callTool(mcp, "ce_scan_next", {
+                await callTool(mcp, CeTool.ScanNext, {
                     pid,
                     value,
                     type: "int32",
@@ -209,18 +192,10 @@ async function pocTraceBaseAddress(
                 console.error("No watched address yet. Run choose_address first.");
                 continue;
             }
-            // FIXME: replace tool name with find_writers / get_watch_stats / equivalent
-            const dump = (await callTool(mcp, "FIXME_GET_WRITE_LOCATIONS", {
+            // FIXME: confirm CeTool.GetWriteLocations matches the live MCP tool name
+            const dump: WriteDump = await callTool(mcp, CeTool.GetWriteLocations, {
                 address: watched,
-            })) as WriteDump;
-            // Expected shape:
-            // {
-            //   "watched_address": "0x000001F812345678",
-            //   "writes": [
-            //     { "rip": "0x...", "location": "game.exe+0x1234", "count": 1832 },
-            //     ...
-            //   ]
-            // }
+            });
             console.log(JSON.stringify(dump, null, 2));
 
             // FIXME: optional — ask Codex which writer to follow next
@@ -229,14 +204,13 @@ async function pocTraceBaseAddress(
             continue;
         }
 
-        // FIXME: add "disassemble_watched" command to disassemble the watched address
         if (cmd === "disassemble_watched") {
             if (!watched) {
                 console.error("No watched address yet. Run choose_address first.");
                 continue;
             }
-            // FIXME: replace tool name with disassemble / equivalent
-            const disassemble = await callTool(mcp, "FIXME_DISASSEMBLE", {
+            // FIXME: confirm CeTool.Disassemble matches the live MCP tool name
+            const disassemble = await callTool(mcp, CeTool.Disassemble, {
                 address: watched,
             });
             console.log(disassemble);
@@ -316,8 +290,15 @@ export {
     pocTraceBaseAddress,
     parsePid,
     connectCeMcp,
-    callTool,
     askCodex,
     appendBaseAddress,
     loadBaseAddresses,
 };
+
+export {
+    CeTool,
+    callTool,
+    parseToolResult,
+    extractMcpJsonPayload,
+    REQUIRED_CE_TOOLS,
+} from "./mcp/ce_tools.ts";
