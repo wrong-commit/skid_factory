@@ -44,7 +44,7 @@ See [`specs/POC_demo.md`](specs/POC_demo.md) for the full demo checklist.
 8. Run `npm run mcp:start:tools` to launch a instance of each MCP tool. Manually launch the bridge scripts
 
 # Development Steps
-1. Complete POC_demo.md and prove that MCP can scan programtically track pointer chains with user interaction
+1. Complete POC_demo.md and prove that MCP can programtically scan pointer chains with user interaction
 2. Add to POC the ability to overwrite WRITE instruction address memory from pointer chain addresses with NOOP
 3. Setup https://github.com/BenteVE/DLL-Injector for DLL Injection through CLI. Add agent skill to use for injection
 4. Setup C++ DLL library template for cheat to write to (later phase)

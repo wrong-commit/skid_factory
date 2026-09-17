@@ -24,7 +24,7 @@ import {
     type WriteDump,
 } from "./mcp/ce_tools.ts";
 import { monitorWrites } from "./handlers/monitor_writes.ts";
-import { followWriteAddress } from "./handlers/write_breakpoint.ts";
+import { followWriteAddress, clearAllWriteBreakpoints } from "./handlers/write_breakpoint.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -192,6 +192,8 @@ async function pocTraceBaseAddress(
         }
 
         if (cmd === "quit" || cmd === "exit" || cmd === "cancel") {
+            const removed = await clearAllWriteBreakpoints(mcp);
+            console.log(`Cleared ${removed} write breakpoint(s)`);
             break;
         }
 
@@ -354,6 +356,7 @@ export {
     followWriteAddress,
     removeWriteBreakpoint,
     setWriteBreakpoint,
+    clearAllWriteBreakpoints,
 } from "./handlers/write_breakpoint.ts";
 
 export {

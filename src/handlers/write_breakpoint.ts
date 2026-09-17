@@ -1,6 +1,7 @@
 /**
  * Clear / set CE write breakpoints via MCP ce_eval_lua.
- * Lua: src/lua/remove_write_breakpoint.lua, src/lua/set_write_breakpoint.lua
+ * Lua: src/lua/remove_write_breakpoint.lua, src/lua/set_write_breakpoint.lua,
+ *      src/lua/clear_write_breakpoints.lua
  */
 
 import { readFile } from "node:fs/promises";
@@ -9,9 +10,31 @@ import { CeTool, callTool } from "../mcp/ce_tools.ts";
 
 const REMOVE_LUA_URL = new URL("../lua/remove_write_breakpoint.lua", import.meta.url);
 const SET_LUA_URL = new URL("../lua/set_write_breakpoint.lua", import.meta.url);
+const CLEAR_ALL_LUA_URL = new URL("../lua/clear_write_breakpoints.lua", import.meta.url);
 
 function luaStringLiteral(value: string): string {
     return JSON.stringify(value);
+}
+
+function extractEvalNumber(raw: unknown): number {
+    if (typeof raw === "number" && Number.isFinite(raw)) {
+        return raw;
+    }
+    if (typeof raw === "string" && raw.trim() !== "" && Number.isFinite(Number(raw))) {
+        return Number(raw);
+    }
+    if (raw !== null && typeof raw === "object") {
+        for (const key of ["result", "value", "output"] as const) {
+            const v = (raw as Record<string, unknown>)[key];
+            if (typeof v === "number" && Number.isFinite(v)) {
+                return v;
+            }
+            if (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))) {
+                return Number(v);
+            }
+        }
+    }
+    return 0;
 }
 
 /**
@@ -60,6 +83,20 @@ return setWriteBreakpoint(${luaStringLiteral(address)}, ${size})
         }
     }
     return address;
+}
+
+/**
+ * Remove every active CE debugger breakpoint (POC write watches).
+ * @returns count of addresses removed, when the bridge returns a number
+ */
+export async function clearAllWriteBreakpoints(mcp: Client): Promise<number> {
+    const luaSource = await readFile(CLEAR_ALL_LUA_URL, "utf8");
+    const code = `${luaSource}
+
+return clearAllWriteBreakpoints()
+`;
+    const result = await callTool(mcp, CeTool.EvalLua, { code });
+    return extractEvalNumber(result);
 }
 
 /**
