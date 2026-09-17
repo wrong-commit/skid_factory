@@ -19,6 +19,21 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
 7. Configure MCP serve in Codex `codex mcp add ...`
 
 # Execution Instructions
+
+## Launch the pointer-trace POC
+
+With Cheat Engine + its MCP bridge already running and attached to the game:
+
+```bash
+npm run poc:trace_pointer -- --pid=<PID>
+```
+
+Example: `npm run poc -- --pid=12345`
+
+See [`specs/POC_demo.md`](specs/POC_demo.md) for the full demo checklist.
+
+## Planned (not wired yet)
+
 1. Run `npm run mpc:start` to start the MCP server
 2. Run `npm run mcp:status` to check the MCP status (?)
 3. Run `npm run game:start` to start the Not a Hero game

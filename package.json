@@ -7,6 +7,7 @@
     "doc": "docs"
   },
   "scripts": {
+    "poc": "node src/poc_trace_pointer.ts",
     "poc:trace_pointer": "node src/poc_trace_pointer.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node index.ts",
