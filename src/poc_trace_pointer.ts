@@ -74,6 +74,9 @@ async function callTool(
     const result = await client.callTool({ name, arguments: args });
     // FIXME: parse MCP CallToolResult content (text/JSON) into typed values
     console.log(`MCP RESULT DEBUG:\n${JSON.stringify(result, undefined, 2)}`)
+
+
+
     return result;
 }
 
@@ -100,126 +103,137 @@ function printHelp(): void {
   quit | exit | cancel            exit without saving`);
 }
 
+/**
+ * Interactive scan → write-watch → follow writers → save base address loop.
+ */
+async function pocTraceBaseAddress(
+    pid: number,
+    mcp: Client,
+    rl: ReturnType<typeof createInterface>,
+): Promise<void> {
+    let watched: string | undefined;
+    let hasScanned = false;
+
+    // Begin CE search with ce_scan_first using console input value as starting value.
+    // Filter in loop calling ce_scan_next until "choose_address" is entered.
+    for await (const line of rl) {
+        const cmd = line.trim();
+        if (!cmd) continue;
+
+        if (cmd === "help") {
+            printHelp();
+            continue;
+        }
+
+        if (cmd === "quit" || cmd === "exit" || cmd === "cancel") {
+            break;
+        }
+
+        // FIMXE: add "reset_scan" that hasScanned
+
+        // int32 value → first scan or next-scan filter
+        // FIXME: extract this into its own command based on different types to scan
+        if (/^-?\d+$/.test(cmd)) {
+            const value = Number(cmd);
+            if (!hasScanned) {
+                // FIXME: map to real tool name + arg schema (pid, value, type, …)
+                await callTool(mcp, "ce_scan_first", {
+                    pid,
+                    value,
+                    type: "int32",
+                });
+                hasScanned = true;
+            } else {
+                // FIXME: map to real ce_scan_next / filter tool
+                await callTool(mcp, "ce_scan_next", {
+                    pid,
+                    value,
+                    type: "int32",
+                });
+            }
+            continue;
+        }
+
+        if (cmd === "choose_address") {
+            // FIXME: fetch + print current scan candidates from CE MCP
+            // FIXME: prompt user (or parse "choose_address <hex>") to pick one
+            // FIXME: add write breakpoint / watch on that address; set `watched`
+            const chosen = "FIXME_CHOSEN_ADDRESS";
+            watched = chosen;
+            console.log(`Watching writes to ${watched}`);
+            // FIXME: print breakpoint / watch details from CE response
+            continue;
+        }
+
+        if (cmd === "show_write_locations") {
+            if (!watched) {
+                console.error("No watched address yet. Run choose_address first.");
+                continue;
+            }
+            // FIXME: replace tool name with find_writers / get_watch_stats / equivalent
+            const dump = (await callTool(mcp, "FIXME_GET_WRITE_LOCATIONS", {
+                address: watched,
+            })) as WriteDump;
+            // Expected shape:
+            // {
+            //   "watched_address": "0x000001F812345678",
+            //   "writes": [
+            //     { "rip": "0x...", "location": "game.exe+0x1234", "count": 1832 },
+            //     ...
+            //   ]
+            // }
+            console.log(JSON.stringify(dump, null, 2));
+
+            // FIXME: optional — ask Codex which writer to follow next
+            // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
+            // console.log(suggestion);
+            continue;
+        }
+
+        if (cmd.startsWith("follow_address ")) {
+            const target = cmd.slice("follow_address ".length).trim();
+            if (!target) {
+                console.error("Usage: follow_address <module+offset|hex>");
+                continue;
+            }
+            // FIXME: clear previous watch and set write breakpoint on `target`
+            // Prove iteration: follow_address game.exe+0x8765 replaces the breakpoint.
+            watched = target;
+            console.log(`Now watching writes to ${watched}`);
+            continue;
+        }
+
+        if (cmd.startsWith("save_base_address ")) {
+            const base = cmd.slice("save_base_address ".length).trim();
+            if (!base) {
+                console.error("Usage: save_base_address <module+offset|hex>");
+                continue;
+            }
+            // Store base for POC purposes.
+            // FIXME: also append to base_addresses.json if you want a multi-run history
+            await writeFile(
+                "poc_base_address.json",
+                JSON.stringify({ base, pid, savedAt: new Date().toISOString() }, null, 2),
+            );
+            console.log(`Wrote poc_base_address.json with base=${base}`);
+            break;
+        }
+
+        console.error(`Unknown command: ${cmd} (type help)`);
+    }
+}
+
 const main = async (pid: number): Promise<void> => {
     // Connect to MCP server and validate tool list.
     // FIXME: optional — also smoke-test via Codex if you want parity with ~/.codex/config.toml
     const mcp = await connectCeMcp();
-
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    let watched: string | undefined;
-    let hasScanned = false;
 
     console.log(`POC trace pointer attached to pid=${pid}`);
     printHelp();
 
     try {
-        // Begin CE search with ce_scan_first using console input value as starting value.
-        // Filter in loop calling ce_scan_next until "choose_address" is entered.
-        for await (const line of rl) {
-            const cmd = line.trim();
-            if (!cmd) continue;
-
-            if (cmd === "help") {
-                printHelp();
-                continue;
-            }
-
-            if (cmd === "quit" || cmd === "exit" || cmd === "cancel") {
-                break;
-            }
-
-            // FIMXE: add "reset_scan" that hasScanned
-
-            // int32 value → first scan or next-scan filter
-            // FIXME: extract this into its own command based on different types to scan
-            if (/^-?\d+$/.test(cmd)) {
-                const value = Number(cmd);
-                if (!hasScanned) {
-                    // FIXME: map to real tool name + arg schema (pid, value, type, …)
-                    await callTool(mcp, "ce_scan_first", {
-                        pid,
-                        value,
-                        type: "int32",
-                    });
-                    hasScanned = true;
-                } else {
-                    // FIXME: map to real ce_scan_next / filter tool
-                    await callTool(mcp, "ce_scan_next", {
-                        pid,
-                        value,
-                        type: "int32",
-                    });
-                }
-                continue;
-            }
-
-            if (cmd === "choose_address") {
-                // FIXME: fetch + print current scan candidates from CE MCP
-                // FIXME: prompt user (or parse "choose_address <hex>") to pick one
-                // FIXME: add write breakpoint / watch on that address; set `watched`
-                const chosen = "FIXME_CHOSEN_ADDRESS";
-                watched = chosen;
-                console.log(`Watching writes to ${watched}`);
-                // FIXME: print breakpoint / watch details from CE response
-                continue;
-            }
-
-            if (cmd === "show_write_locations") {
-                if (!watched) {
-                    console.error("No watched address yet. Run choose_address first.");
-                    continue;
-                }
-                // FIXME: replace tool name with find_writers / get_watch_stats / equivalent
-                const dump = (await callTool(mcp, "FIXME_GET_WRITE_LOCATIONS", {
-                    address: watched,
-                })) as WriteDump;
-                // Expected shape:
-                // {
-                //   "watched_address": "0x000001F812345678",
-                //   "writes": [
-                //     { "rip": "0x...", "location": "game.exe+0x1234", "count": 1832 },
-                //     ...
-                //   ]
-                // }
-                console.log(JSON.stringify(dump, null, 2));
-
-                // FIXME: optional — ask Codex which writer to follow next
-                // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
-                // console.log(suggestion);
-                continue;
-            }
-
-            if (cmd.startsWith("follow_address ")) {
-                const target = cmd.slice("follow_address ".length).trim();
-                if (!target) {
-                    console.error("Usage: follow_address <module+offset|hex>");
-                    continue;
-                }
-                // FIXME: clear previous watch and set write breakpoint on `target`
-                // Prove iteration: follow_address game.exe+0x8765 replaces the breakpoint.
-                watched = target;
-                console.log(`Now watching writes to ${watched}`);
-                continue;
-            }
-
-            if (cmd.startsWith("save_base_address ")) {
-                const base = cmd.slice("save_base_address ".length).trim();
-                if (!base) {
-                    console.error("Usage: save_base_address <module+offset|hex>");
-                    continue;
-                }
-                // Store base for POC purposes.
-                // FIXME: also append to base_addresses.json if you want a multi-run history
-                await writeFile(
-                    "poc_base_address.json",
-                    JSON.stringify({ base, pid, savedAt: new Date().toISOString() }, null, 2),
-                );
-                console.log(`Wrote poc_base_address.json with base=${base}`);
-                break;
-            }
-
-            console.error(`Unknown command: ${cmd} (type help)`);
-        }
+        await pocTraceBaseAddress(pid, mcp, rl);
     } finally {
         rl.close();
         // FIXME: confirm Client.close() / transport dispose API for your SDK version
@@ -239,4 +253,4 @@ if (isMain) {
     });
 }
 
-export { main, parsePid, connectCeMcp, callTool, askCodex };
+export { main, pocTraceBaseAddress, parsePid, connectCeMcp, callTool, askCodex };
