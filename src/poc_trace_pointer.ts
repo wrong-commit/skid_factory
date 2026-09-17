@@ -95,6 +95,7 @@ async function askCodex(prompt: string): Promise<string> {
 function printHelp(): void {
     console.log(`Commands:
   <int32>                         ce_scan_first (or next filter after first scan)
+  reset_scan                      restart scanning state
   choose_address                  print candidates; set write watch on chosen address
   show_write_locations            dump writers JSON for current watch
   follow_address <loc|hex>        move write watch to that instruction / address
@@ -129,7 +130,11 @@ async function pocTraceBaseAddress(
             break;
         }
 
-        // FIMXE: add "reset_scan" that hasScanned
+        if (cmd === "reset_scan") {
+            hasScanned = false;
+            console.log("Scan state reset; next int32 will call ce_scan_first");
+            continue;
+        }
 
         // int32 value → first scan or next-scan filter
         // FIXME: extract this into its own command based on different types to scan
