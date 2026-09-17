@@ -62,8 +62,8 @@ export function parseMonitorAddress(address: string | number): bigint {
     if (/^0x[0-9a-fA-F]+$/i.test(trimmed)) {
         return BigInt(trimmed);
     }
-    // Bare hex from CE (e.g. 0DE216C8) — has A–F so it cannot be decimal
-    if (/^[0-9A-Fa-f]+$/i.test(trimmed) && /[A-Fa-f]/.test(trimmed)) {
+    // Bare hex from CE (e.g. 0C505970 / 0DE216C8): has A–F, or long hex address
+    if (/^[0-9A-Fa-f]+$/i.test(trimmed) && (/[A-Fa-f]/.test(trimmed) || trimmed.length >= 8)) {
         return BigInt(`0x${trimmed}`);
     }
     // Decimal digits only
@@ -71,7 +71,7 @@ export function parseMonitorAddress(address: string | number): bigint {
         return BigInt(trimmed);
     }
     throw new Error(
-        `Invalid monitor address: ${JSON.stringify(address)} (expected hex 0x... / bare hex like 0DE216C8, or decimal)`,
+        `Invalid monitor address: ${JSON.stringify(address)} (expected hex 0x... / bare hex like 0C505970, or decimal)`,
     );
 }
 

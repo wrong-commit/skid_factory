@@ -100,11 +100,15 @@ async function appendBaseAddress(entry: BaseAddressEntry): Promise<void> {
 
 /**
  * Normalize a CE address spec for Lua getAddress / breakpoints.
- * Bare hex like `25C3260C038` → `0x25C3260C038`; leave `0x...`, decimal, and `module+offset` alone.
+ * Bare hex like `0C505970` / `25C3260C038` → `0x...`; leave `0x...`, decimal, and `module+offset` alone.
  */
 function normalizeAddressSpec(spec: string): string {
     const s = spec.trim();
-    if (/^[0-9A-Fa-f]+$/i.test(s) && /[A-Fa-f]/.test(s)) {
+    if (/^0x[0-9A-Fa-f]+$/i.test(s)) {
+        return s;
+    }
+    // CE-style bare hex (has A–F, or long enough to be an address not a small decimal)
+    if (/^[0-9A-Fa-f]+$/i.test(s) && (/[A-Fa-f]/.test(s) || s.length >= 8)) {
         return `0x${s}`;
     }
     return s;
@@ -200,8 +204,9 @@ function printHelp(): void {
                                   types: ${CE_SCAN_TYPES.join(", ")}
   scan_results [limit=50]         ce_scan_results — list addresses from current scan
   reset_scan                      ce_scan_reset + clear local scan state
-  monitor_writes [addr] [type|size] [ms]  timed write-watch collect via ce_eval_lua
-                                  default: watched address, last scan type, 3000ms
+  monitor_writes <addr> [type|size] [ms]  timed write-watch collect via ce_eval_lua
+                                  example: monitor_writes 0C505970 double 5000
+                                  default type: last scan type (else int32), ms=3000
   show_write_locations            same as monitor_writes using current watched address
   disassemble <loc|hex> [count]   disassemble at an instruction RIP / code address
                                   tip: use a rip from monitor_writes, not the data address
@@ -212,6 +217,7 @@ function printHelp(): void {
 
 /**
  * Parse `monitor_writes [addr] [type|size] [durationMs]` or `show_write_locations`.
+ * Examples: `monitor_writes 0C505970 double 5000`, `monitor_writes` (uses watched).
  * Returns null after printing usage errors.
  */
 function parseMonitorWritesCommand(
@@ -219,13 +225,15 @@ function parseMonitorWritesCommand(
     watched: string | undefined,
     defaultType: CeScanType | undefined,
 ): { address: string; type: CeScanType; size: number; durationMs: number } | null {
-    const usage = "Usage: monitor_writes <addr> [type|size=int32] [durationMs=3000]";
+    const usage =
+        "Usage: monitor_writes <addr> [type|size=int32] [durationMs=3000]\n" +
+        "  example: monitor_writes 0C505970 double 5000";
 
     if (cmd === "show_write_locations" || cmd === "monitor_writes") {
         if (!watched) {
             console.error(
                 cmd === "show_write_locations"
-                    ? "No watched address yet. Run choose_address or monitor_writes <addr> first."
+                    ? "No watched address yet. Run monitor_writes <addr> first."
                     : usage,
             );
             return null;
@@ -235,8 +243,8 @@ function parseMonitorWritesCommand(
     }
 
     const parts = cmd.slice("monitor_writes ".length).trim().split(/\s+/);
-    const address = parts[0];
-    if (!address) {
+    const rawAddress = parts[0];
+    if (!rawAddress) {
         console.error(usage);
         return null;
     }
@@ -251,6 +259,7 @@ function parseMonitorWritesCommand(
             size = Number(parts[1]);
             if (!Number.isInteger(size) || size <= 0) {
                 console.error(`Invalid type or size: ${parts[1]}`);
+                console.error(`  types: ${CE_SCAN_TYPES.join(", ")}`);
                 return null;
             }
         }
@@ -262,8 +271,17 @@ function parseMonitorWritesCommand(
         return null;
     }
 
+    if (parts[3] !== undefined) {
+        console.error(usage);
+        return null;
+    }
+
     const resolved = resolveMonitorWritesTypeAndSize({ type, size });
-    return { address, ...resolved, durationMs };
+    return {
+        address: normalizeAddressSpec(rawAddress),
+        ...resolved,
+        durationMs,
+    };
 }
 
 function parseFollowAddressCommand(
@@ -304,7 +322,7 @@ async function pocTraceBaseAddress(
     mcp: Client,
     rl: ReturnType<typeof createInterface>,
 ): Promise<void> {
-    // let watched: string | undefined;
+    let watched: string | undefined;
     let hasScanned = false;
     let lastScanType: CeScanType | undefined;
 
@@ -438,27 +456,28 @@ async function pocTraceBaseAddress(
             // }
 
             // // Dump the write locations for the watched address (custom ce_monitor_writes)
-            // if (
-            //     cmd === "show_write_locations" ||
-            //     cmd === "monitor_writes" ||
-            //     cmd.startsWith("monitor_writes ")
-            // ) {
-            //     const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
-            //     if (!monitorArgs) {
-            //         continue;
-            //     }
-            //     watched = monitorArgs.address;
-            //     console.log(
-            //         `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
-            //     );
-            //     const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
-            //     console.log(JSON.stringify(dump, null, 2));
+            if (
+                cmd === "show_write_locations" ||
+                cmd === "monitor_writes" ||
+                cmd.startsWith("monitor_writes ")
+            ) {
+                const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
+                if (!monitorArgs) {
+                    continue;
+                }
+                watched = monitorArgs.address;
+                lastScanType = monitorArgs.type;
+                console.log(
+                    `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
+                );
+                const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
+                console.log(JSON.stringify(dump, null, 2));
 
-            //     // FIXME: optional — ask Codex which writer to follow next
-            //     // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
-            //     // console.log(suggestion);
-            //     continue;
-            // }
+                // FIXME: optional — ask Codex which writer to follow next
+                // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
+                // console.log(suggestion);
+                continue;
+            }
 
             // if (cmd === "disassemble_watched" || cmd.startsWith("disassemble_watched ")) {
             //     if (!watched) {
