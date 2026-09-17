@@ -117,7 +117,7 @@ export const CeScanFirstArgsSchema = z.object({
     hex: z.boolean().default(false),
 });
 
-/** Args for ce_scan_next (re-mcp). */
+/** Args for ce_scan_next (re-mcp). Value type is fixed by the prior ce_scan_first. */
 export const CeScanNextArgsSchema = z.object({
     scanOption: z
         .enum([

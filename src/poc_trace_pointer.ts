@@ -316,177 +316,190 @@ async function pocTraceBaseAddress(
         const cmd = line.trim();
         if (!cmd) continue;
 
-        if (cmd === "help") {
-            printHelp();
-            continue;
-        }
-
-        if (cmd === "quit" || cmd === "exit" || cmd === "cancel") {
-            break;
-        }
-
-        if (cmd === "reset_scan") {
-            await callTool(mcp, CeTool.ScanReset, {});
-            hasScanned = false;
-            lastScanType = undefined;
-            console.log("Scan state reset; next scan <type> <value> will call ce_scan_first");
-            continue;
-        }
-
-        // scan_results [limit] → ce_scan_results
-        const scanResultsCmd = /^scan_results(?:\s+(\d+))?$/i.exec(cmd);
-        if (scanResultsCmd) {
-            if (!hasScanned) {
-                console.error("No active scan. Run scan <type> <value> first.");
+        try {
+            if (cmd === "help") {
+                printHelp();
                 continue;
             }
-            const limit =
-                scanResultsCmd[1] !== undefined ? Number(scanResultsCmd[1]) : 50;
-            if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-                console.error("Usage: scan_results [limit=1..1000]");
+
+            if (cmd === "quit" || cmd === "exit" || cmd === "cancel") {
+                break;
+            }
+
+            if (cmd === "reset_scan") {
+                await callTool(mcp, CeTool.ScanReset, {});
+                hasScanned = false;
+                lastScanType = undefined;
+                console.log("Scan state reset; next scan <type> <value> will call ce_scan_first");
                 continue;
             }
-            const dump = await callTool(mcp, CeTool.ScanResults, { limit });
-            console.log(
-                `Scan results: total=${dump.total} returned=${dump.returned}`,
-            );
-            for (const hit of dump.results) {
-                console.log(`  ${hit.address}  =  ${hit.value}`);
-            }
-            continue;
-        }
 
-        // scan <type> <value> → first scan or next-scan filter
-        if (cmd === "scan" || /^scan\s/i.test(cmd)) {
-            const parsed = parseScanCommand(cmd);
-            if (!parsed || "error" in parsed) {
-                console.error(parsed?.error ?? "Usage: scan <type> <value>");
-                continue;
-            }
-            if (!hasScanned) {
-                const first = await callTool(mcp, CeTool.ScanFirst, {
-                    value: parsed.value,
-                    type: parsed.type,
-                    scanOption: "exact",
-                    hex: parsed.hex,
-                });
-                hasScanned = true;
-                lastScanType = parsed.type;
-                console.log(`ce_scan_first type=${parsed.type}: count=${first.count}`);
-            } else {
-                const next = await callTool(mcp, CeTool.ScanNext, {
-                    value: parsed.value,
-                    scanOption: "exact",
-                    hex: parsed.hex,
-                });
-                console.log(`ce_scan_next: count=${next.count}`);
-            }
-            continue;
-        }
-
-        // choose_address <hex|module+offset> → set write watch on that location
-        if (cmd === "choose_address" || cmd.startsWith("choose_address ")) {
-            const raw = cmd === "choose_address"
-                ? ""
-                : cmd.slice("choose_address ".length).trim();
-            if (!raw) {
-                console.error("Usage: choose_address <hex|module+offset>");
-                console.error("  examples: choose_address 25C3260C038");
-                console.error("            choose_address 0x25C3260C038");
-                console.error("            choose_address game.exe+1234");
-                if (hasScanned) {
-                    const dump = await callTool(mcp, CeTool.ScanResults, { limit: 50 });
-                    console.log(
-                        `Current scan candidates: total=${dump.total} returned=${dump.returned}`,
-                    );
-                    for (const hit of dump.results) {
-                        console.log(`  ${hit.address}  =  ${hit.value}`);
-                    }
+            // scan_results [limit] → ce_scan_results
+            const scanResultsCmd = /^scan_results(?:\s+(\d+))?$/i.exec(cmd);
+            if (scanResultsCmd) {
+                if (!hasScanned) {
+                    console.error("No active scan. Run scan <type> <value> first.");
+                    continue;
+                }
+                const limit =
+                    scanResultsCmd[1] !== undefined ? Number(scanResultsCmd[1]) : 50;
+                if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+                    console.error("Usage: scan_results [limit=1..1000]");
+                    continue;
+                }
+                const dump = await callTool(mcp, CeTool.ScanResults, { limit });
+                console.log(
+                    `Scan results: total=${dump.total} returned=${dump.returned}`,
+                );
+                for (const hit of dump.results) {
+                    console.log(`  ${hit.address}  =  ${hit.value}`);
                 }
                 continue;
             }
 
-            const chosen = normalizeAddressSpec(raw);
-            const watchType = lastScanType ?? "int32";
-            const resolved = await followWriteAddress(mcp, chosen, watched, watchType);
-            watched = chosen;
-            console.log(`Watching writes to ${watched} type=${watchType} (resolved ${resolved})`);
-            continue;
-        }
-
-        // Dump the write locations for the watched address (custom ce_monitor_writes)
-        if (
-            cmd === "show_write_locations" ||
-            cmd === "monitor_writes" ||
-            cmd.startsWith("monitor_writes ")
-        ) {
-            const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
-            if (!monitorArgs) {
-                continue;
-            }
-            watched = monitorArgs.address;
-            console.log(
-                `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
-            );
-            const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
-            console.log(JSON.stringify(dump, null, 2));
-
-            // FIXME: optional — ask Codex which writer to follow next
-            // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
-            // console.log(suggestion);
-            continue;
-        }
-
-        if (cmd === "disassemble_watched") {
-            if (!watched) {
-                console.error("No watched address yet. Run choose_address first.");
-                continue;
-            }
-            // FIXME: confirm CeTool.Disassemble matches the live MCP tool name
-            const disassemble = await callTool(mcp, CeTool.Disassemble, {
-                address: watched,
-            });
-            console.log(disassemble);
-            continue;
-        }
-
-        // Follow the address to the next writer
-        if (cmd === "follow_address" || cmd.startsWith("follow_address ")) {
-            const parsed = parseFollowAddressCommand(cmd, lastScanType);
-            if (!parsed || "error" in parsed) {
-                console.error(parsed?.error ?? "Usage: follow_address <loc|hex> [type]");
+            // scan <type> <value> → first scan or next-scan filter
+            if (cmd === "scan" || /^scan\s/i.test(cmd)) {
+                const parsed = parseScanCommand(cmd);
+                if (!parsed || "error" in parsed) {
+                    console.error(parsed?.error ?? "Usage: scan <type> <value>");
+                    continue;
+                }
+                if (!hasScanned || (lastScanType !== undefined && parsed.type !== lastScanType)) {
+                    if (hasScanned && lastScanType !== undefined && parsed.type !== lastScanType) {
+                        console.log(
+                            `Scan type changed (${lastScanType} → ${parsed.type}); starting new ce_scan_first`,
+                        );
+                        await callTool(mcp, CeTool.ScanReset, {});
+                        hasScanned = false;
+                        lastScanType = undefined;
+                    }
+                    const first = await callTool(mcp, CeTool.ScanFirst, {
+                        value: parsed.value,
+                        type: parsed.type,
+                        scanOption: "exact",
+                        hex: parsed.hex,
+                    });
+                    hasScanned = true;
+                    lastScanType = parsed.type;
+                    console.log(`ce_scan_first type=${parsed.type}: count=${first.count}`);
+                } else {
+                    // ce_scan_next has no `type` — vartype is locked by the prior first scan
+                    const next = await callTool(mcp, CeTool.ScanNext, {
+                        value: parsed.value,
+                        scanOption: "exact",
+                        hex: parsed.hex,
+                    });
+                    console.log(`ce_scan_next: count=${next.count}`);
+                }
                 continue;
             }
 
-            const resolved = await followWriteAddress(mcp, parsed.target, watched, parsed.type);
-            watched = parsed.target;
-            lastScanType = parsed.type;
-            console.log(
-                `Cleared previous watch; now watching writes to ${watched} type=${parsed.type} (resolved ${resolved})`,
-            );
-            continue;
-        }
+            // choose_address <hex|module+offset> → set write watch on that location
+            if (cmd === "choose_address" || cmd.startsWith("choose_address ")) {
+                const raw = cmd === "choose_address"
+                    ? ""
+                    : cmd.slice("choose_address ".length).trim();
+                if (!raw) {
+                    console.error("Usage: choose_address <hex|module+offset>");
+                    console.error("  examples: choose_address 25C3260C038");
+                    console.error("            choose_address 0x25C3260C038");
+                    console.error("            choose_address game.exe+1234");
+                    if (hasScanned) {
+                        const dump = await callTool(mcp, CeTool.ScanResults, { limit: 50 });
+                        console.log(
+                            `Current scan candidates: total=${dump.total} returned=${dump.returned}`,
+                        );
+                        for (const hit of dump.results) {
+                            console.log(`  ${hit.address}  =  ${hit.value}`);
+                        }
+                    }
+                    continue;
+                }
 
-        if (cmd.startsWith("save_base_address ")) {
-            const rest = cmd.slice("save_base_address ".length).trim();
-            const parsed = /^(\S+)\s+(.+)$/.exec(rest);
-            if (!parsed) {
-                console.error("Usage: save_base_address <loc|hex> <note...>");
+                const chosen = normalizeAddressSpec(raw);
+                const watchType = lastScanType ?? "int32";
+                const resolved = await followWriteAddress(mcp, chosen, watched, watchType);
+                watched = chosen;
+                console.log(`Watching writes to ${watched} type=${watchType} (resolved ${resolved})`);
                 continue;
             }
-            const base = parsed[1]!;
-            const note = parsed[2]!.trim();
-            const entry: BaseAddressEntry = {
-                base,
-                note,
-                savedAt: new Date().toISOString(),
-            };
-            await appendBaseAddress(entry);
-            console.log(`Appended to ${BASE_ADDRESSES_PATH}: base=${base} note=${JSON.stringify(note)}`);
-            break;
-        }
 
-        console.error(`Unknown command: ${cmd} (type help)`);
+            // Dump the write locations for the watched address (custom ce_monitor_writes)
+            if (
+                cmd === "show_write_locations" ||
+                cmd === "monitor_writes" ||
+                cmd.startsWith("monitor_writes ")
+            ) {
+                const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
+                if (!monitorArgs) {
+                    continue;
+                }
+                watched = monitorArgs.address;
+                console.log(
+                    `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
+                );
+                const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
+                console.log(JSON.stringify(dump, null, 2));
+
+                // FIXME: optional — ask Codex which writer to follow next
+                // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
+                // console.log(suggestion);
+                continue;
+            }
+
+            if (cmd === "disassemble_watched") {
+                if (!watched) {
+                    console.error("No watched address yet. Run choose_address first.");
+                    continue;
+                }
+                // FIXME: confirm CeTool.Disassemble matches the live MCP tool name
+                const disassemble = await callTool(mcp, CeTool.Disassemble, {
+                    address: watched,
+                });
+                console.log(disassemble);
+                continue;
+            }
+
+            // Follow the address to the next writer
+            if (cmd === "follow_address" || cmd.startsWith("follow_address ")) {
+                const parsed = parseFollowAddressCommand(cmd, lastScanType);
+                if (!parsed || "error" in parsed) {
+                    console.error(parsed?.error ?? "Usage: follow_address <loc|hex> [type]");
+                    continue;
+                }
+
+                const resolved = await followWriteAddress(mcp, parsed.target, watched, parsed.type);
+                watched = parsed.target;
+                lastScanType = parsed.type;
+                console.log(
+                    `Cleared previous watch; now watching writes to ${watched} type=${parsed.type} (resolved ${resolved})`,
+                );
+                continue;
+            }
+
+            if (cmd.startsWith("save_base_address ")) {
+                const rest = cmd.slice("save_base_address ".length).trim();
+                const parsed = /^(\S+)\s+(.+)$/.exec(rest);
+                if (!parsed) {
+                    console.error("Usage: save_base_address <loc|hex> <note...>");
+                    continue;
+                }
+                const base = parsed[1]!;
+                const note = parsed[2]!.trim();
+                const entry: BaseAddressEntry = {
+                    base,
+                    note,
+                    savedAt: new Date().toISOString(),
+                };
+                await appendBaseAddress(entry);
+                console.log(`Appended to ${BASE_ADDRESSES_PATH}: base=${base} note=${JSON.stringify(note)}`);
+                break;
+            }
+
+            console.error(`Unknown command: ${cmd} (type help)`);
+        } catch (err) {
+            console.error(err instanceof Error ? err.message : err);
+        }
     }
 }
 
