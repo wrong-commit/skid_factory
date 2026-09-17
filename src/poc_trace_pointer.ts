@@ -9,7 +9,7 @@
 // optional Codex/LLM is only for reasoning prompts (not the scan filter loop).
 
 import { execFile } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -19,6 +19,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const execFileAsync = promisify(execFile);
 
+const BASE_ADDRESSES_PATH = "base_addresses.json";
+
 type WriteDump = {
     watched_address: string;
     writes: Array<{
@@ -26,6 +28,13 @@ type WriteDump = {
         location: string;
         count: number;
     }>;
+};
+
+type BaseAddressEntry = {
+    base: string;
+    note: string;
+    pid: number;
+    savedAt: string;
 };
 
 /** Parse argv to get pid */
@@ -92,6 +101,28 @@ async function askCodex(prompt: string): Promise<string> {
     return stdout;
 }
 
+async function loadBaseAddresses(): Promise<BaseAddressEntry[]> {
+    try {
+        const raw = await readFile(BASE_ADDRESSES_PATH, "utf8");
+        const parsed: unknown = JSON.parse(raw);
+        if (!Array.isArray(parsed)) {
+            throw new Error(`${BASE_ADDRESSES_PATH} must be a JSON array`);
+        }
+        return parsed as BaseAddressEntry[];
+    } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            return [];
+        }
+        throw err;
+    }
+}
+
+async function appendBaseAddress(entry: BaseAddressEntry): Promise<void> {
+    const entries = await loadBaseAddresses();
+    entries.push(entry);
+    await writeFile(BASE_ADDRESSES_PATH, JSON.stringify(entries, null, 2));
+}
+
 function printHelp(): void {
     console.log(`Commands:
   scan int32 <int32>              ce_scan_first (or next filter after first scan)
@@ -99,7 +130,7 @@ function printHelp(): void {
   choose_address                  print candidates; set write watch on chosen address
   show_write_locations            dump writers JSON for current watch
   follow_address <loc|hex>        move write watch to that instruction / address
-  save_base_address <loc|hex>     write poc_base_address.json and exit
+  save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
   quit | exit | cancel            exit without saving`);
 }
@@ -210,18 +241,22 @@ async function pocTraceBaseAddress(
         }
 
         if (cmd.startsWith("save_base_address ")) {
-            const base = cmd.slice("save_base_address ".length).trim();
-            if (!base) {
-                console.error("Usage: save_base_address <module+offset|hex>");
+            const rest = cmd.slice("save_base_address ".length).trim();
+            const parsed = /^(\S+)\s+(.+)$/.exec(rest);
+            if (!parsed) {
+                console.error("Usage: save_base_address <loc|hex> <note...>");
                 continue;
             }
-            // Store base for POC purposes.
-            // FIXME: also append to base_addresses.json if you want a multi-run history
-            await writeFile(
-                "poc_base_address.json",
-                JSON.stringify({ base, pid, savedAt: new Date().toISOString() }, null, 2),
-            );
-            console.log(`Wrote poc_base_address.json with base=${base}`);
+            const base = parsed[1]!;
+            const note = parsed[2]!.trim();
+            const entry: BaseAddressEntry = {
+                base,
+                note,
+                pid,
+                savedAt: new Date().toISOString(),
+            };
+            await appendBaseAddress(entry);
+            console.log(`Appended to ${BASE_ADDRESSES_PATH}: base=${base} note=${JSON.stringify(note)}`);
             break;
         }
 
@@ -259,4 +294,13 @@ if (isMain) {
     });
 }
 
-export { main, pocTraceBaseAddress, parsePid, connectCeMcp, callTool, askCodex };
+export {
+    main,
+    pocTraceBaseAddress,
+    parsePid,
+    connectCeMcp,
+    callTool,
+    askCodex,
+    appendBaseAddress,
+    loadBaseAddresses,
+};
