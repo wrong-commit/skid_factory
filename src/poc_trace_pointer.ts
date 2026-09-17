@@ -110,12 +110,24 @@ async function appendBaseAddress(entry: BaseAddressEntry): Promise<void> {
     await writeFile(BASE_ADDRESSES_PATH, JSON.stringify(entries, null, 2));
 }
 
+/**
+ * Normalize a CE address spec for Lua getAddress / breakpoints.
+ * Bare hex like `25C3260C038` → `0x25C3260C038`; leave `0x...`, decimal, and `module+offset` alone.
+ */
+function normalizeAddressSpec(spec: string): string {
+    const s = spec.trim();
+    if (/^[0-9A-Fa-f]+$/i.test(s) && /[A-Fa-f]/.test(s)) {
+        return `0x${s}`;
+    }
+    return s;
+}
+
 function printHelp(): void {
     console.log(`Commands:
   scan int32 <int32>              ce_scan_first (or next filter after first scan)
   scan_results [limit=50]         ce_scan_results — list addresses from current scan
   reset_scan                      ce_scan_reset + clear local scan state
-  choose_address                  print candidates; set write watch on chosen address
+  choose_address <loc|hex>        set write watch (e.g. 25C3260C038, 0x..., or game.exe+1234)
   monitor_writes [addr] [size] [ms]  custom ce_monitor_writes via ce_eval_lua (default: watched, size=4, 3000ms)
   show_write_locations            same as monitor_writes using current watched address
   disassemble_watched             disassemble ASM around the watched address
@@ -249,14 +261,32 @@ async function pocTraceBaseAddress(
             continue;
         }
 
-        if (cmd === "choose_address") {
-            // FIXME: fetch + print current scan candidates from CE MCP
-            // FIXME: prompt user (or parse "choose_address <hex>") to pick one
-            // FIXME: add write breakpoint / watch on that address; set `watched`
-            const chosen = "FIXME_CHOSEN_ADDRESS";
+        // choose_address <hex|module+offset> → set write watch on that location
+        if (cmd === "choose_address" || cmd.startsWith("choose_address ")) {
+            const raw = cmd === "choose_address"
+                ? ""
+                : cmd.slice("choose_address ".length).trim();
+            if (!raw) {
+                console.error("Usage: choose_address <hex|module+offset>");
+                console.error("  examples: choose_address 25C3260C038");
+                console.error("            choose_address 0x25C3260C038");
+                console.error("            choose_address game.exe+1234");
+                if (hasScanned) {
+                    const dump = await callTool(mcp, CeTool.ScanResults, { limit: 50 });
+                    console.log(
+                        `Current scan candidates: total=${dump.total} returned=${dump.returned}`,
+                    );
+                    for (const hit of dump.results) {
+                        console.log(`  ${hit.address}  =  ${hit.value}`);
+                    }
+                }
+                continue;
+            }
+
+            const chosen = normalizeAddressSpec(raw);
+            const resolved = await followWriteAddress(mcp, chosen, watched);
             watched = chosen;
-            console.log(`Watching writes to ${watched}`);
-            // FIXME: print breakpoint / watch details from CE response
+            console.log(`Watching writes to ${watched} (resolved ${resolved})`);
             continue;
         }
 
