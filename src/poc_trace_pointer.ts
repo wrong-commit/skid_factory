@@ -94,7 +94,7 @@ async function askCodex(prompt: string): Promise<string> {
 
 function printHelp(): void {
     console.log(`Commands:
-  <int32>                         ce_scan_first (or next filter after first scan)
+  scan int32 <int32>              ce_scan_first (or next filter after first scan)
   reset_scan                      restart scanning state
   choose_address                  print candidates; set write watch on chosen address
   show_write_locations            dump writers JSON for current watch
@@ -132,14 +132,15 @@ async function pocTraceBaseAddress(
 
         if (cmd === "reset_scan") {
             hasScanned = false;
-            console.log("Scan state reset; next int32 will call ce_scan_first");
+            console.log("Scan state reset; next scan int32 will call ce_scan_first");
             continue;
         }
 
-        // int32 value → first scan or next-scan filter
-        // FIXME: extract this into its own command based on different types to scan
-        if (/^-?\d+$/.test(cmd)) {
-            const value = Number(cmd);
+        // scan int32 <value> → first scan or next-scan filter
+        // FIXME: add scan <type> variants beyond int32
+        const scanInt32 = /^scan\s+int32\s+(-?\d+)$/i.exec(cmd);
+        if (scanInt32) {
+            const value = Number(scanInt32[1]);
             if (!hasScanned) {
                 // FIXME: map to real tool name + arg schema (pid, value, type, …)
                 await callTool(mcp, "ce_scan_first", {
