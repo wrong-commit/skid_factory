@@ -25,10 +25,10 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
 With Cheat Engine + its MCP bridge already running and attached to the game:
 
 ```bash
-npm run poc:trace_pointer -- --pid=<PID>
+npm run poc:trace_pointer
 ```
 
-Example: `npm run poc -- --pid=12345`
+Example: `npm run poc`
 
 See [`specs/POC_demo.md`](specs/POC_demo.md) for the full demo checklist.
 

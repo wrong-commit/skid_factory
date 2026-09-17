@@ -33,23 +33,8 @@ const BASE_ADDRESSES_PATH = "base_addresses.json";
 type BaseAddressEntry = {
     base: string;
     note: string;
-    pid: number;
     savedAt: string;
 };
-
-/** Parse argv to get pid */
-function parsePid(argv: string[]): number {
-    const arg = argv.find((a) => a.startsWith("--pid="));
-    if (!arg) {
-        throw new Error('Missing required argument "--pid=XXX"');
-    }
-    const value = arg.slice("--pid=".length);
-    const pid = Number(value);
-    if (!Number.isInteger(pid) || pid <= 0) {
-        throw new Error(`Invalid --pid value: ${value}`);
-    }
-    return pid;
-}
 
 /**
  * Connect to the Cheat Engine MCP server (same server Codex would use via config.toml).
@@ -186,7 +171,6 @@ function parseMonitorWritesCommand(
  * Interactive scan → write-watch → follow writers → save base address loop.
  */
 async function pocTraceBaseAddress(
-    pid: number,
     mcp: Client,
     rl: ReturnType<typeof createInterface>,
 ): Promise<void> {
@@ -352,7 +336,6 @@ async function pocTraceBaseAddress(
             const entry: BaseAddressEntry = {
                 base,
                 note,
-                pid,
                 savedAt: new Date().toISOString(),
             };
             await appendBaseAddress(entry);
@@ -373,7 +356,7 @@ async function clearBreakpointsOnExit(mcp: Client): Promise<void> {
     }
 }
 
-const main = async (pid: number): Promise<void> => {
+const main = async (): Promise<void> => {
     // Connect to MCP server and validate tool list.
     // FIXME: optional — also smoke-test via Codex if you want parity with ~/.codex/config.toml
     const mcp = await connectCeMcp();
@@ -399,7 +382,7 @@ const main = async (pid: number): Promise<void> => {
     printHelp();
 
     try {
-        await pocTraceBaseAddress(pid, mcp, rl);
+        await pocTraceBaseAddress(mcp, rl);
     } finally {
         if (!cleaningUp) {
             cleaningUp = true;
@@ -417,7 +400,7 @@ const isMain =
     import.meta.url === pathToFileURL(path.resolve(entryPath)).href;
 
 if (isMain) {
-    main(parsePid(process.argv.slice(2))).catch((err) => {
+    main().catch((err) => {
         console.error(err);
         process.exitCode = 1;
     });
@@ -426,7 +409,6 @@ if (isMain) {
 export {
     main,
     pocTraceBaseAddress,
-    parsePid,
     connectCeMcp,
     askCodex,
     appendBaseAddress,

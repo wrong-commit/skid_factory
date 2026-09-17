@@ -87,16 +87,16 @@ Throw when `isError === true` or when there is no usable content.
 
 | `CeTool` | MCP name (current) | Args | Result schema |
 | --- | --- | --- | --- |
-| `ScanFirst` | `ce_scan_first` | `pid`, `value`, `type` | `CeScanResultSchema` (placeholder) |
-| `ScanNext` | `ce_scan_next` | same | same |
-| `ScanReset` | `ce_scan_reset` | `pid` | `CeScanResetResultSchema` (placeholder: `{ ok }`) |
+| `ScanFirst` | `ce_scan_first` | `value`, `type` (process already attached in CE) | `CeScanCountResultSchema` (`{ count }`) |
+| `ScanNext` | `ce_scan_next` | `value`, `scanOption` | `CeScanCountResultSchema` (`{ count }`) |
+| `ScanReset` | `ce_scan_reset` | none | `CeScanResetResultSchema` (`{ ok }`) |
 | `EvalLua` | `ce_eval_lua` | `code` | `CeEvalLuaResultSchema` (string or `{ result\|value\|output }`) |
 | `GetWriteLocations` | `get_write_locations` | `address` | `WriteDumpSchema` (deprecated; prefer custom handler) |
 | `Disassemble` | `disassemble` | `address` | `DisassembleResultSchema` (placeholder) |
 
 Custom app operation **`ce_monitor_writes`** is not an MCP tool: see [`SPEC_POC_FIND_WRITE_ADDRESS.md`](./SPEC_POC_FIND_WRITE_ADDRESS.md). It loads `src/lua/monitor_writes.lua` and calls `CeTool.EvalLua`.
 
-REPL mapping: `reset_scan` → `callTool(mcp, CeTool.ScanReset, { pid })`, then clear local `hasScanned`.
+REPL mapping: `reset_scan` → `callTool(mcp, CeTool.ScanReset, {})`, then clear local `hasScanned`.
 
 **FIXME:** align `EvalLua` / `GetWriteLocations` / `Disassemble` / `ScanReset` result fields (and scan result fields) with the installed CE MCP bridge’s real tool names and JSON shapes. Until then, connect-time `REQUIRED_CE_TOOLS` checks will fail against a mismatched server — that is intentional.
 
