@@ -29,5 +29,8 @@
   "type": "module",
   "engines": {
     "node": ">=22.6.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
   }
 }

@@ -15,15 +15,24 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
 3. Install cheat-engine-mcp (https://github.com/Travers9483/mcp-cheat-engine) 
 4. Set up MCP bridges for cheat-engine-mcp
 5. Install Not a Hero from Steam/GOG
+6. Install Codex CLI
+7. Configure MCP serve in Codex `codex mcp add ...`
 
 # Execution Instructions
 1. Run `npm run mpc:start` to start the MCP server
 2. Run `npm run mcp:status` to check the MCP status (?)
 3. Run `npm run game:start` to start the Not a Hero game
+4. Run `npm run game:inject` to inject the prebuilt DLL
+5. Run `npm run game:stop` to start the Not a Hero game
+6. Run `npm run cheat:build` to run the build steps for the DLL library
+7. Run `npm run mcp:start` to start he MCP server
+8. Run `npm run mcp:start:tools` to launch a instance of each MCP tool. Manually launch the bridge scripts
 
 # Development Steps
 1. Complete POC_demo.md and prove that MCP can scan programtically track pointer chains with user interaction
 2. Add to POC the ability to overwrite WRITE instruction address memory from pointer chain addresses with NOOP
+3. Setup https://github.com/BenteVE/DLL-Injector for DLL Injection through CLI. Add agent skill to use for injection
+4. Setup C++ DLL library template for cheat to write to (later phase)
 3. Add transparent GUI overlay for debugging
     - [ ] current task/workflow status
     - [ ] current address spaces scan result count 
