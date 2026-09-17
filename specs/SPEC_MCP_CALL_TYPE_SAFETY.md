@@ -89,10 +89,13 @@ Throw when `isError === true` or when there is no usable content.
 | --- | --- | --- | --- |
 | `ScanFirst` | `ce_scan_first` | `pid`, `value`, `type` | `CeScanResultSchema` (placeholder) |
 | `ScanNext` | `ce_scan_next` | same | same |
+| `ScanReset` | `ce_scan_reset` | `pid` | `CeScanResetResultSchema` (placeholder: `{ ok }`) |
 | `GetWriteLocations` | `get_write_locations` | `address` | `WriteDumpSchema` |
 | `Disassemble` | `disassemble` | `address` | `DisassembleResultSchema` (placeholder) |
 
-**FIXME:** align `GetWriteLocations` / `Disassemble` (and scan result fields) with the installed CE MCP bridge’s real tool names and JSON shapes. Until then, connect-time `REQUIRED_CE_TOOLS` checks will fail against a mismatched server — that is intentional.
+REPL mapping: `reset_scan` → `callTool(mcp, CeTool.ScanReset, { pid })`, then clear local `hasScanned`.
+
+**FIXME:** align `GetWriteLocations` / `Disassemble` / `ScanReset` result fields (and scan result fields) with the installed CE MCP bridge’s real tool names and JSON shapes. Until then, connect-time `REQUIRED_CE_TOOLS` checks will fail against a mismatched server — that is intentional.
 
 ## Connect-time checks
 

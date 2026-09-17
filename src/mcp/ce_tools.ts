@@ -10,6 +10,7 @@ import { z } from "zod";
 export const CeTool = {
     ScanFirst: "ce_scan_first",
     ScanNext: "ce_scan_next",
+    ScanReset: "ce_scan_reset",
     GetWriteLocations: "get_write_locations",
     Disassemble: "disassemble",
 } as const;
@@ -29,6 +30,16 @@ export const CeScanArgsSchema = z.object({
 export const CeScanResultSchema = z.object({
     count: z.number().int().nonnegative(),
     addresses: z.array(z.string()).optional(),
+});
+
+/** Args for clearing an in-progress value scan for a process. */
+export const CeScanResetArgsSchema = z.object({
+    pid: z.number().int().positive(),
+});
+
+/** FIXME: replace with real ce_scan_reset response shape from the CE MCP bridge. */
+export const CeScanResetResultSchema = z.object({
+    ok: z.boolean().default(true),
 });
 
 export const WriteHitSchema = z.object({
@@ -63,6 +74,10 @@ export const ceToolCatalog = {
         args: CeScanArgsSchema,
         result: CeScanResultSchema,
     },
+    [CeTool.ScanReset]: {
+        args: CeScanResetArgsSchema,
+        result: CeScanResetResultSchema,
+    },
     [CeTool.GetWriteLocations]: {
         args: z.object({ address: z.string().min(1) }),
         result: WriteDumpSchema,
@@ -85,6 +100,7 @@ export type CeToolMap = {
 export const REQUIRED_CE_TOOLS: readonly CeToolName[] = [
     CeTool.ScanFirst,
     CeTool.ScanNext,
+    CeTool.ScanReset,
     CeTool.GetWriteLocations,
     CeTool.Disassemble,
 ];

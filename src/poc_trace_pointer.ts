@@ -111,7 +111,7 @@ async function appendBaseAddress(entry: BaseAddressEntry): Promise<void> {
 function printHelp(): void {
     console.log(`Commands:
   scan int32 <int32>              ce_scan_first (or next filter after first scan)
-  reset_scan                      restart scanning state
+  reset_scan                      ce_scan_reset + clear local scan state
   choose_address                  print candidates; set write watch on chosen address
   show_write_locations            dump writers JSON for current watch
   disassemble_watched             disassemble ASM around the watched address
@@ -148,6 +148,7 @@ async function pocTraceBaseAddress(
         }
 
         if (cmd === "reset_scan") {
+            await callTool(mcp, CeTool.ScanReset, { pid });
             hasScanned = false;
             console.log("Scan state reset; next scan int32 will call ce_scan_first");
             continue;
@@ -225,6 +226,7 @@ async function pocTraceBaseAddress(
                 continue;
             }
             // FIXME: clear previous watch and set write breakpoint on `target`
+
             // Prove iteration: follow_address game.exe+0x8765 replaces the breakpoint.
             watched = target;
             console.log(`Now watching writes to ${watched}`);
