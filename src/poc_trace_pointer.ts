@@ -24,6 +24,7 @@ import {
     type WriteDump,
 } from "./mcp/ce_tools.ts";
 import { monitorWrites } from "./handlers/monitor_writes.ts";
+import { followWriteAddress } from "./handlers/write_breakpoint.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -277,11 +278,10 @@ async function pocTraceBaseAddress(
                 console.error("Usage: follow_address <module+offset|hex>");
                 continue;
             }
-            // FIXME: clear previous watch and set write breakpoint on `target`
 
-            // Prove iteration: follow_address game.exe+0x8765 replaces the breakpoint.
+            const resolved = await followWriteAddress(mcp, target, watched);
             watched = target;
-            console.log(`Now watching writes to ${watched}`);
+            console.log(`Cleared previous watch; now watching writes to ${watched} (resolved ${resolved})`);
             continue;
         }
 
@@ -350,6 +350,11 @@ export {
 };
 
 export { monitorWrites } from "./handlers/monitor_writes.ts";
+export {
+    followWriteAddress,
+    removeWriteBreakpoint,
+    setWriteBreakpoint,
+} from "./handlers/write_breakpoint.ts";
 
 export {
     CeTool,

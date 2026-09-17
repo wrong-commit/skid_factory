@@ -57,10 +57,13 @@ One hardware write watch at a time. Collect many hits, **dedupe by RIP**, return
 
 | Path | Role |
 | --- | --- |
-| `src/lua/monitor_writes.lua` | **Source of truth** for CE behavior — edit this to change the watch |
+| `src/lua/monitor_writes.lua` | **Source of truth** for timed write-watch collect |
+| `src/lua/remove_write_breakpoint.lua` | `debug_removeBreakpoint` for previous watch |
+| `src/lua/set_write_breakpoint.lua` | Persistent `bptWrite` for `follow_address` |
 | `src/handlers/monitor_writes.ts` | Loads Lua, builds eval chunk, calls `ce_eval_lua`, parses `WriteDump` |
+| `src/handlers/write_breakpoint.ts` | `followWriteAddress` → remove previous + set target |
 | `src/mcp/ce_tools.ts` | Catalog entry for `ce_eval_lua` + shared `WriteDumpSchema` |
-| `src/poc_trace_pointer.ts` | REPL commands `monitor_writes` / `show_write_locations` |
+| `src/poc_trace_pointer.ts` | REPL commands `monitor_writes` / `show_write_locations` / `follow_address` |
 
 ## Lua contract (`monitorWrites`)
 
@@ -103,9 +106,10 @@ await monitorWrites(mcp, {
 monitor_writes <addr> [size=4] [durationMs=3000]
 monitor_writes                 # uses current watched address
 show_write_locations           # alias: watched address, size=4, 3000ms
+follow_address <loc|hex>       # debug_removeBreakpoint(previous) + setWriteBreakpoint(target)
 ```
 
-Successful runs update the POC’s `watched` address to the monitored data address.
+`follow_address` clears the previous data-address write watch (if any) via `src/lua/remove_write_breakpoint.lua`, then sets a new `bptWrite` on the target via `src/lua/set_write_breakpoint.lua`. Successful runs update the POC’s `watched` address.
 
 ## MCP dependency
 

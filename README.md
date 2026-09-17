@@ -2,7 +2,7 @@
 A tool to automate video game reverse engineering and cheat client development using LLMs and MCP. Proof is provided using the "Not a Hero" single player, DRM free game.
 
 ## Why ?
-This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing custom C I barely understood to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
+This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing C I barely understood using Win32 API's I would partially grok to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
 
 ## How ?
 Use a Node JS script for orchestrating the whole reverse engineering process. Use MCP to interact with the low-level tools: Cheat Engine, x64dbg and Ghidra.. 
