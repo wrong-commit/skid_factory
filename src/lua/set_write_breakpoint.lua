@@ -3,6 +3,9 @@
 
   Invoked by src/handlers/write_breakpoint.ts via MCP ce_eval_lua.
   One active watch intended — call removeWriteBreakpoint on the previous address first.
+
+  Always installs an auto-continue callback. A write BP without continue freezes
+  the target on every store to that address.
 ]]
 
 function setWriteBreakpoint(addressSpec, size)
@@ -20,6 +23,9 @@ function setWriteBreakpoint(addressSpec, size)
     debugProcess()
   end
 
-  debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister)
+  debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, function()
+    debug_continueFromBreakpoint(co_run)
+    return 1
+  end)
   return string.format("0x%016X", address)
 end

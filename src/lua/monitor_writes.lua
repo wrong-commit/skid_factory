@@ -32,6 +32,21 @@ local function hexAddress(n)
   return string.format("0x%016X", n)
 end
 
+--- Instruction pointer in a breakpoint callback (64-bit RIP, 32-bit EIP, or API).
+local function currentIP()
+  local ip = getInstructionPointer()
+  if type(ip) == "number" and ip ~= 0 then
+    return ip
+  end
+  if RIP ~= nil then
+    return RIP
+  end
+  if EIP ~= nil then
+    return EIP
+  end
+  return nil
+end
+
 local SIZE_FROM_TYPE = {
   byte = 1, int8 = 1, uint8 = 1,
   int16 = 2,
@@ -72,17 +87,28 @@ function monitorWrites(address, size, durationMs, vtype)
   end
 
   local hits = {}
+  local unknownCount = 0
 
-  -- Prefer a per-breakpoint callback so we do not rely on a global
-  -- debugger_onBreakpoint dispatcher (hardware slot limit: one active watch).
+  -- Keep the callback tiny: record IP, always continue. Errors here used to
+  -- skip debug_continueFromBreakpoint and freeze the game.
   debug_setBreakpoint(address, size, bptWrite, bpmDebugRegister, function()
-    local rip = RIP
-    local entry = hits[rip]
-    if entry == nil then
-      entry = { count = 0, raw = tostring(RIP) }
-      hits[rip] = entry
+    local ok, err = pcall(function()
+      local rip = currentIP()
+      if rip == nil then
+        unknownCount = unknownCount + 1
+        return
+      end
+      local entry = hits[rip]
+      if entry == nil then
+        hits[rip] = { count = 1 }
+      else
+        entry.count = entry.count + 1
+      end
+    end)
+    if not ok then
+      -- Prefer continuing the target over surfacing callback errors mid-hit.
+      print("[monitorWrites] breakpoint callback: " .. tostring(err))
     end
-    entry.count = entry.count + 1
     debug_continueFromBreakpoint(co_run)
     return 1
   end)
@@ -99,9 +125,18 @@ function monitorWrites(address, size, durationMs, vtype)
     end
     writes[#writes + 1] = {
       rip = hexAddress(rip),
-      ripRaw = entry.raw,
+      ripRaw = tostring(rip),
       location = location,
       count = entry.count,
+    }
+  end
+
+  if unknownCount > 0 then
+    writes[#writes + 1] = {
+      rip = "0x0000000000000000",
+      ripRaw = "unknown",
+      location = "unknown",
+      count = unknownCount,
     }
   end
 
