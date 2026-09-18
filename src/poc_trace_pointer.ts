@@ -36,7 +36,11 @@ import {
 import { createSessionLog } from "./advise/session_log.ts";
 import { buildAdvisePrompt } from "./advise/build_prompt.ts";
 import { runCursorOneShot } from "./advise/cursor_cli.ts";
-import { parseAdvisePlan, type AdvisePlan } from "./advise/parse_plan.ts";
+import {
+    classifyAdviseStep,
+    parseAdvisePlan,
+    type AdvisePlan,
+} from "./advise/parse_plan.ts";
 import { executeAdvisePlan, type AdviseRunners } from "./advise/execute_plan.ts";
 
 const execFileAsync = promisify(execFile);
@@ -123,21 +127,60 @@ function formatHexAddr(n: number): string {
     return `0x${Math.trunc(n).toString(16).toUpperCase()}`;
 }
 
-/** Parse `0x888,0x14,0x158` or `2184,20,344` into offset ints. */
+/** Parse `0x888,0x14,0x158` or `0,20,256` into offset ints (0 is kept). */
 function parseOffsetList(raw: string): number[] | undefined {
-    const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    const parts = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
     if (parts.length === 0) return undefined;
     const out: number[] = [];
     for (const p of parts) {
         if (/^0x[0-9a-fA-F]+$/i.test(p)) {
             out.push(Number.parseInt(p, 16));
         } else if (/^\d+$/.test(p)) {
+            // Decimal — including standalone 0 (do not use filter(Boolean) on numbers)
             out.push(Number.parseInt(p, 10));
         } else {
             return undefined;
         }
     }
     return out;
+}
+
+/** CLI form that never drops a leading 0 (e.g. `0,0x14,0x100`). */
+export function formatOffsetsCli(offsets: number[]): string {
+    return offsets
+        .map((n) => {
+            if (n === 0) return "0";
+            if (n < 10) return String(n);
+            return `0x${n.toString(16).toUpperCase()}`;
+        })
+        .join(",");
+}
+
+/**
+ * If the note/path clearly means "deref at base first" (`[[base]+…` / `[[addr]+…`
+ * with only two opens), ensure offsets start with 0.
+ * Does not rewrite `[[[base]+0x888]+…` (three opens → first offset is from base).
+ */
+function ensureLeadingZeroForBaseDeref(offsets: number[], note: string): number[] {
+    const compact = note.replace(/\s+/g, "");
+    const baseIdx = compact.toLowerCase().indexOf("base");
+    if (baseIdx >= 0) {
+        let opensBefore = 0;
+        for (let j = baseIdx - 1; j >= 0 && compact[j] === "["; j--) opensBefore++;
+        // [[base]+off] — exactly two '[' before base, then ]+
+        const after = compact.slice(baseIdx + 4);
+        if (opensBefore === 2 && /^\]\+/.test(after) && offsets[0] !== 0) {
+            return [0, ...offsets];
+        }
+        return offsets;
+    }
+    // [[0x987E30]+0x14] or [[00987E30]+0x14]
+    if (/\[\[[0-9a-fxA-F]+\]\+/i.test(compact) && offsets[0] !== 0) {
+        // Count opens before the hex inside [[hex]+
+        const m = /\[\[([0-9a-fxA-F]+)\]\+/i.exec(compact);
+        if (m) return [0, ...offsets];
+    }
+    return offsets;
 }
 
 function parseSingleOffsetToken(raw: string): number | undefined {
@@ -148,13 +191,22 @@ function parseSingleOffsetToken(raw: string): number | undefined {
 }
 
 /**
- * From a note like `[[[base]+0x888]+0x14]+0x158` or `[[[base]]+0x14]+0x100`,
+ * From a note like `[[[base]+0x888]+0x14]+0x158` or `[[base]+0x14]+0x100`,
  * build CE-style offsets[] (last = value offset).
+ *
+ * CE resolve: for each offset except last, addr = readPtr(addr+off); value @ addr+last.
+ * So `[[base]+0x14]+0x100` → [0, 0x14, 0x100] (deref base first).
+ * `base → +0x888 → +0x14 → +0x158` written as `[[[base]+0x888]+…]` → [0x888, 0x14, 0x158].
  */
 function parseOffsetsFromPathNote(note: string): number[] | undefined {
     const compact = note.replace(/\s+/g, "");
     const baseIdx = compact.toLowerCase().indexOf("base");
     if (baseIdx < 0) return undefined;
+
+    let opensBefore = 0;
+    for (let j = baseIdx - 1; j >= 0 && compact[j] === "["; j--) {
+        opensBefore++;
+    }
 
     const after = compact.slice(baseIdx + 4);
     let i = 0;
@@ -178,10 +230,17 @@ function parseOffsetsFromPathNote(note: string): number[] | undefined {
     }
     if (plusOffsets.length === 0) return undefined;
 
-    // `[[[base]+0x888]...` → one `]` then `+` → offsets are just the +list
-    // `[[[base]]+0x14]...` → two+ `]` then `+` → that many leading 0 derefs
-    if (closeCount <= 1) return plusOffsets;
-    return [...Array.from({ length: closeCount }, () => 0), ...plusOffsets];
+    // `[[[base]]+0x14]...` → two+ closes before + → that many leading 0 derefs
+    if (closeCount >= 2) {
+        return [...Array.from({ length: closeCount }, () => 0), ...plusOffsets];
+    }
+    // `[[base]+0x14]+0x100` → one close then + with exactly two '[' before base
+    // means deref [base] (offset 0) then apply the +list
+    if (closeCount === 1 && opensBefore === 2) {
+        return [0, ...plusOffsets];
+    }
+    // `[[[base]+0x888]+…]` or bare `+0x14+0x100` → +list only (first offset from base)
+    return plusOffsets;
 }
 
 function inferTypeFromNote(note: string): CeScanType | undefined {
@@ -249,6 +308,12 @@ function parseSaveBaseAddressCommand(rest: string): {
 
     if (!type) type = inferTypeFromNote(note);
     if (!offsets) offsets = parseOffsetsFromPathNote(note);
+    if (offsets && offsets.length > 0) {
+        const fixed = ensureLeadingZeroForBaseDeref(offsets, note);
+        if (fixed.length !== offsets.length || fixed.some((n, i) => n !== offsets![i])) {
+            offsets = fixed;
+        }
+    }
 
     return { base, type, offsets, note };
 }
@@ -317,11 +382,15 @@ for i = 1, #offsets - 1 do
   local at = (addr + off) % 0x100000000
   local next = read_u32(at)
   if next == nil then
-    error(string.format("nil u32 read at 0x%X (step %d; process attached / alive?)", at, i - 1))
+    error(string.format(
+      "nil u32 read at 0x%X (step %d). Check offsets[] — ammo via 00987E30 needs [0,0x14,0x100] not [0x14,0x100]. Process attached?",
+      at, i - 1))
   end
   steps[#steps+1] = string.format("[0x%X+0x%X] -> 0x%X", addr, off, next)
   if next == 0 then
-    error("null pointer at step " .. tostring(i - 1))
+    error(string.format(
+      "null pointer (0) at step %d reading [0x%X+0x%X]=0x%X. Wrong offsets or stale heap — try offsets with leading 0 (deref base first), or re-monitor_writes.",
+      i - 1, addr, off, at))
   end
   addr = next
 end
@@ -363,7 +432,13 @@ function findBaseEntry(
 ): BaseAddressEntry | undefined {
     const trimmed = spec.trim();
     if (/^\d+$/.test(trimmed)) {
-        return entries[Number.parseInt(trimmed, 10)];
+        const idx = Number.parseInt(trimmed, 10);
+        if (idx < 0 || idx >= entries.length) {
+            throw new Error(
+                `No base at index ${idx} (have ${entries.length}; use 0..${Math.max(0, entries.length - 1)}). list_bases to see them.`,
+            );
+        }
+        return entries[idx];
     }
     const want = normalizeHexAddr(normalizeAddressSpec(trimmed));
     return entries.find((e) => normalizeHexAddr(normalizeAddressSpec(e.base)) === want);
@@ -495,12 +570,14 @@ function printHelp(): void {
   list_bases                      print base_addresses.json
   save_base_address <addr> [type] [offsets] <note...>
                                   writes type + offsets[] into base_addresses.json
+                                  example: save_base_address 0x987E30 double 0,0x14,0x100 ammo
+                                  (leading 0 required when path is [[base]+off]…)
                                   example: save_base_address 0x985F48 double 0x888,0x14,0x158 hp
                                   example: save_base_address 0x989B48 double 0,0,0x14,0x100 ammo
                                   example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158
   advise [question]               Cursor CLI coach from session history (proposal only)
-  advise --run [question]         propose + auto-run scan_results / disassemble / monitor_writes
-  advise_run                      execute last advise plan (Enter before monitor_writes; Y/n after)
+  advise --run [question]         propose + auto-run; loops after scan_results / dumps
+  advise_run                      execute last plan then loop on gather dumps (Enter before monitor)
   help                            show this help
   quit | exit | cancel            exit REPL
 
@@ -596,9 +673,12 @@ function printDisassembly(result: unknown): void {
 }
 
 /** Print monitor_writes dump: JSON without nested disasm, then formatted disasm per RIP. */
-function printWriteDump(dump: WriteDump): void {
+function printWriteDump(
+    dump: WriteDump,
+    line: (...args: unknown[]) => void = console.log,
+): void {
     const writesWithoutDisasm = dump.writes.map(({ disasm: _disasm, ...rest }) => rest);
-    console.log(
+    line(
         JSON.stringify(
             {
                 watched_address: dump.watched_address,
@@ -613,8 +693,27 @@ function printWriteDump(dump: WriteDump): void {
 
     for (const hit of dump.writes) {
         if (!hit.disasm || hit.disasm.length === 0) continue;
-        console.log(`\n--- disasm ${hit.location} (rip=${hit.rip}, count=${hit.count}) ---`);
-        printDisassembly({ instructions: hit.disasm });
+        line(`\n--- disasm ${hit.location} (rip=${hit.rip}, count=${hit.count}) ---`);
+        const instructions = extractDisassembleInstructions({ instructions: hit.disasm });
+        if (instructions.length === 0) {
+            line("(no instructions)");
+            continue;
+        }
+        const targetHex = extractDisassembleTargetHex({ instructions: hit.disasm });
+        const rows = instructions.map((ins) => ({
+            address: String(ins.address ?? "").trim(),
+            bytes: String(ins.bytes ?? "").trim(),
+            opcode: String(ins.opcode ?? "").trim(),
+            target: isTargetInstruction(ins, targetHex),
+        }));
+        const addrWidth = Math.max(8, ...rows.map((r) => r.address.length));
+        const bytesWidth = Math.max(8, ...rows.map((r) => r.bytes.length));
+        for (const row of rows) {
+            const mark = row.target ? "  <-- target address" : "";
+            line(
+                `${row.address.padEnd(addrWidth)}  ${row.bytes.padEnd(bytesWidth)}  ${row.opcode}${mark}`,
+            );
+        }
     }
 }
 
@@ -640,11 +739,15 @@ function parseMonitorWritesCommand(
     cmd: string,
     watched: string | undefined,
     defaultType: CeScanType | undefined,
+    /** When set (advise path), always used instead of command/default ms. */
+    forceDurationMs?: number,
 ): { address: string; type: CeScanType; size: number; durationMs: number } | null {
     const usage =
         "Usage: monitor_writes <addr> [type|size=int32] [durationMs=3000]\n" +
         "  example: monitor_writes 0C505970 double 5000\n" +
         "  example: monitor_writes NOT A HERO.exe+1FF50D double 5000";
+
+    const defaultDurationMs = 3000;
 
     if (cmd === "show_write_locations" || cmd === "monitor_writes") {
         if (!watched) {
@@ -656,7 +759,11 @@ function parseMonitorWritesCommand(
             return null;
         }
         const resolved = resolveMonitorWritesTypeAndSize({ type: defaultType });
-        return { address: watched, ...resolved, durationMs: 3000 };
+        return {
+            address: watched,
+            ...resolved,
+            durationMs: forceDurationMs ?? defaultDurationMs,
+        };
     }
 
     const rest = cmd.slice("monitor_writes ".length).trim();
@@ -684,10 +791,14 @@ function parseMonitorWritesCommand(
         }
     }
 
-    const durationMs = parts[1] !== undefined ? Number(parts[1]) : 3000;
-    if (!Number.isInteger(durationMs) || durationMs < 0) {
-        console.error(`Invalid durationMs: ${parts[1]}`);
-        return null;
+    let durationMs =
+        forceDurationMs ??
+        (parts[1] !== undefined ? Number(parts[1]) : defaultDurationMs);
+    if (forceDurationMs === undefined) {
+        if (!Number.isInteger(durationMs) || durationMs < 0) {
+            console.error(`Invalid durationMs: ${parts[1]}`);
+            return null;
+        }
     }
 
     if (parts[2] !== undefined) {
@@ -763,7 +874,7 @@ async function pocTraceBaseAddress(
         const hits = dump.results;
         const lines = [
             `Scan results: total=${dump.total} returned=${hits.length}`,
-            "  Address = Value",
+            "  Address \t= Value",
             ...hits.map((hit) => `  ${hit.address}  =  ${hit.value}`),
         ];
         for (const line of lines) sessionLog.print(line);
@@ -802,8 +913,16 @@ async function pocTraceBaseAddress(
         }
     };
 
-    const runMonitorWritesCmd = async (cmd: string): Promise<void> => {
-        const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
+    const runMonitorWritesCmd = async (
+        cmd: string,
+        forceDurationMs?: number,
+    ): Promise<void> => {
+        const monitorArgs = parseMonitorWritesCommand(
+            cmd,
+            watched,
+            lastScanType,
+            forceDurationMs,
+        );
         if (!monitorArgs) {
             throw new Error("Invalid monitor_writes command");
         }
@@ -813,19 +932,20 @@ async function pocTraceBaseAddress(
             `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
         );
         const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
-        printWriteDump(dump);
-        sessionLog.out(JSON.stringify({
-            watched_address: dump.watched_address,
-            type: dump.type,
-            size: dump.size,
-            writes: dump.writes.map(({ disasm: _d, ...rest }) => rest),
-        }, null, 2));
-        for (const hit of dump.writes) {
-            if (!hit.disasm || hit.disasm.length === 0) continue;
-            sessionLog.out(
-                `--- disasm ${hit.location} (rip=${hit.rip}, count=${hit.count}) ---`,
-            );
-        }
+        // Human-readable + structured dump both go into the advise transcript.
+        printWriteDump(dump, (...args) => sessionLog.print(...args));
+        sessionLog.out(
+            JSON.stringify(
+                {
+                    watched_address: dump.watched_address,
+                    type: dump.type,
+                    size: dump.size,
+                    writes: dump.writes.map(({ disasm: _d, ...rest }) => rest),
+                },
+                null,
+                2,
+            ),
+        );
     };
 
     const runResolveBase = async (spec: string): Promise<void> => {
@@ -870,46 +990,97 @@ async function pocTraceBaseAddress(
         question?: string;
         reusePlan?: boolean;
     }): Promise<void> => {
-        let plan = lastAdvisePlan;
-        if (!opts.reusePlan) {
-            const bases = await loadBaseAddresses();
-            const prompt = await buildAdvisePrompt(sessionLog, {
-                watched,
-                lastScanType,
-                basesJson: JSON.stringify(bases, null, 2),
-                executionMode: opts.execute ? "execute_allowlist" : "propose_only",
-                question: opts.question,
-            });
-            sessionLog.print("Calling Cursor CLI (agent -p --mode ask)…");
-            const reply = await runCursorOneShot(prompt, {
-                cwd: process.cwd(),
-            });
-            sessionLog.print("\n--- advise reply ---\n" + reply + "\n--- end advise ---");
-            plan = parseAdvisePlan(reply);
-            lastAdvisePlan = plan;
-            if (plan.steps.length > 0) {
+        const maxLoops = Number(process.env.ADVISE_MAX_LOOPS) || 8;
+        let loops = 0;
+        let reusePlan = opts.reusePlan === true;
+        let question = opts.question;
+
+        while (true) {
+            loops++;
+            if (loops > maxLoops) {
                 sessionLog.print(
-                    `Parsed ${plan.steps.length} next command(s):\n` +
-                        plan.steps.map((s, i) => `  ${i + 1}. ${s}`).join("\n"),
+                    `(advise loop stopped: hit ADVISE_MAX_LOOPS=${maxLoops})`,
                 );
-            } else {
-                sessionLog.print("(No Next commands block parsed from reply)");
+                break;
             }
-        } else if (!plan) {
-            sessionLog.printErr("No last advise plan. Run advise first.");
-            return;
-        }
 
-        if (!opts.execute || !plan) return;
+            let plan = lastAdvisePlan;
+            if (!reusePlan) {
+                const bases = await loadBaseAddresses();
+                const prompt = await buildAdvisePrompt(sessionLog, {
+                    watched,
+                    lastScanType,
+                    basesJson: JSON.stringify(bases, null, 2),
+                    executionMode: opts.execute ? "execute_allowlist" : "propose_only",
+                    question,
+                });
+                sessionLog.note(
+                    `advise turn ${loops}/${maxLoops} (transcript events=${sessionLog.snapshot().length})`,
+                );
+                sessionLog.print(
+                    `Calling Cursor CLI (agent -p --mode ask)… [loop ${loops}/${maxLoops}]`,
+                );
+                const reply = await runCursorOneShot(prompt, {
+                    cwd: process.cwd(),
+                });
+                sessionLog.print(
+                    "\n--- advise reply ---\n" + reply + "\n--- end advise ---",
+                );
+                plan = parseAdvisePlan(reply);
+                lastAdvisePlan = plan;
+                if (plan.steps.length > 0) {
+                    sessionLog.print(
+                        `Parsed ${plan.steps.length} next command(s):\n` +
+                            plan.steps.map((s, i) => `  ${i + 1}. ${s}`).join("\n"),
+                    );
+                } else {
+                    sessionLog.print("(No Next commands block parsed from reply)");
+                }
+            } else {
+                reusePlan = false;
+                if (!plan) {
+                    sessionLog.printErr("No last advise plan. Run advise first.");
+                    return;
+                }
+                sessionLog.note(`advise_run reusing last plan (loop ${loops})`);
+            }
 
-        const result = await executeAdvisePlan(plan, adviseRunners());
-        if (result.reAdvise) {
-            sessionLog.note("Re-advising after monitor_writes");
-            await runAdvise({
-                execute: true,
-                question: "Continue from the latest monitor_writes dump in the transcript.",
-                reusePlan: false,
+            if (!opts.execute || !plan) return;
+
+            const autoSteps = plan.steps.filter((s) => {
+                const k = classifyAdviseStep(s);
+                return k !== "suggest_only" && k !== "unknown";
             });
+            if (autoSteps.length === 0) {
+                // Print manual suggestions once, then exit the loop.
+                await executeAdvisePlan(plan, adviseRunners());
+                sessionLog.print("(advise loop idle: no auto-run steps left)");
+                break;
+            }
+
+            const result = await executeAdvisePlan(plan, adviseRunners());
+            if (result.reAdvise) {
+                const kinds = result.evidence.length
+                    ? result.evidence.join(", ")
+                    : "gather";
+                sessionLog.note(
+                    `Re-advising after ${kinds} — next prompt includes full transcript + dumps`,
+                );
+                question =
+                    question ??
+                    "Continue from the latest tool output in the transcript. Pick the next gather or propose manual scan/save steps.";
+                reusePlan = false;
+                continue;
+            }
+            if (result.stopped) {
+                sessionLog.print(
+                    `(advise loop stopped: ${result.reason ?? "plan stopped"})`,
+                );
+                break;
+            }
+            // Plan finished (e.g. only disassemble) without a re-advise trigger.
+            sessionLog.print("(advise plan finished)");
+            break;
         }
     };
 
@@ -1283,7 +1454,12 @@ async function pocTraceBaseAddress(
                 if (!entry.offsets || !entry.type) {
                     console.error(
                         "Warning: missing type and/or offsets — poc_patch_base will not work until you add them.\n" +
-                            "  Prefer: save_base_address <addr> double 0x888,0x14,0x158 <note>",
+                            "  Prefer: save_base_address <addr> double 0,0x14,0x100 <note>\n" +
+                            "  (leading 0 = deref at base; never omit it for [[base]+off] paths)",
+                    );
+                } else {
+                    console.log(
+                        `offsets CLI form: ${formatOffsetsCli(entry.offsets)}`,
                     );
                 }
                 await appendBaseAddress(entry);

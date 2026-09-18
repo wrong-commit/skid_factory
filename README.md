@@ -96,7 +96,7 @@ advise --run
 advise_run
 ```
 
-`advise --run` / `advise_run` auto-executes `scan_results`, `disassemble`, and `monitor_writes` from the model’s plan. For `monitor_writes`, press Enter when ready to interact in-game, then Y/n to continue (then it re-advises by default). See [`specs/SPEC_POC_ADVISE_CURSOR_CLI.md`](specs/SPEC_POC_ADVISE_CURSOR_CLI.md).
+`advise --run` / `advise_run` auto-executes allowlisted gather steps and **loops**: each Cursor call gets the full session transcript (prior commands + tool outputs). After `scan_results`, `monitor_writes` JSON, `list_bases`, or `resolve_base`, it re-prompts the agent with the new dump (cap: `ADVISE_MAX_LOOPS`). For `monitor_writes`, press Enter when ready to interact in-game, then Y/n to continue the loop. See [`specs/SPEC_POC_ADVISE_CURSOR_CLI.md`](specs/SPEC_POC_ADVISE_CURSOR_CLI.md).
 
 ## Planned (not wired yet)
 

@@ -1,2 +1,24 @@
 [
+  {
+    "base": "0x0DA301EC",
+    "note": "mid_alt",
+    "savedAt": "2026-09-18T01:56:42.234Z",
+    "type": "double",
+    "offsets": [
+      0,
+      20,
+      256
+    ]
+  },
+  {
+    "base": "0x987E30",
+    "note": "mid_static",
+    "savedAt": "2026-09-18T01:56:45.956Z",
+    "type": "double",
+    "offsets": [
+      0,
+      20,
+      256
+    ]
+  }
 ]

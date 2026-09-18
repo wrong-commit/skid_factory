@@ -48,3 +48,14 @@ ${transcript}
 \`\`\`
 `;
 }
+
+/**
+ * NOTE: removing this from the code caused the model to continue live memory hacking 
+## Loop contract
+The host may call you repeatedly. Each call includes the **full prior transcript**
+(commands + tool outputs: scan_results tables, disassembly, monitor_writes JSON,
+bases JSON). After auto-running gather steps that dump evidence, the host
+re-prompts you — do not assume later plan lines still run. Prefer **1–3** next
+commands focused on the newest dump.
+
+ */

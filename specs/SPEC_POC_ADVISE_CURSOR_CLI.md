@@ -54,8 +54,8 @@ Pointer tracing is a **stateful dialogue**: scan → filter → `monitor_writes`
 2. Parse the `## Next commands` block into an ordered plan.
 3. Execute allowlisted steps automatically (below).
 4. On `monitor_writes …`: **do not start the watch yet** — prompt the user first.
-5. After user confirms interaction is ready / done protocol (below), run `monitor_writes`, append results to the session log, then continue with any remaining plan steps.
-6. Optionally (recommended default after a gated `monitor_writes`): run **another** one-shot `advise` with the updated transcript so the next pointer-scan suggestions use the fresh dump.
+5. After user confirms interaction is ready / done protocol (below), run `monitor_writes`, append results to the session log, then **re-advise** with the full transcript (do not blindly continue a stale plan tail).
+6. The same **re-advise loop** runs after `scan_results`, `list_bases`, and `resolve_base` dumps so the agent can pick the next address/action from fresh tool output. Cap with `ADVISE_MAX_LOOPS` (default 8).
 
 ### Manual interaction gate (`monitor_writes`)
 
@@ -232,10 +232,12 @@ Per step:
 3. If `disassemble` / `scan_results` → run, mirror normal REPL printing, append log.
 4. If `monitor_writes` / `show_write_locations`:
    - Emit `gate` “ready to start watch?” → wait for Enter on `rl`.
-   - Run monitor; log dump.
-   - Emit `gate` “continue plan?” → Y/n.
+   - Run monitor; log dump (JSON + disasm) into the session transcript.
+   - Emit `gate` “continue advise loop?” → Y/n.
    - On n → `{ stopped: true }`.
-   - On Y → continue; if `ADVISE_REAADVISE_AFTER_MONITOR=1` (default **true**), break remaining steps and call `advise` once more with updated log (fresh pointer-scan suggestions beat stale plan tail).
+   - On Y → `{ reAdvise: true }` (default): host rebuilds prompt from **full transcript + new dump** and calls Cursor again.
+5. If `scan_results` / `list_bases` / `resolve_base` → run, append dump to transcript, `{ reAdvise: true }` by default (`ADVISE_REAADVISE_AFTER_GATHER`) so the agent chooses the next address/command from evidence instead of a stale plan tail.
+6. `disassemble` stays in-plan (may be followed by `monitor_writes` in the same turn) unless a later gather dump triggers re-advise.
 
 Failures (MCP error, parse error): log `err`, stop plan, leave REPL usable.
 
@@ -262,7 +264,9 @@ Large prompts → temp file / stdin if argv limits bind.
 | `ADVISE_MODEL` | model override if supported | CLI default |
 | `ADVISE_TIMEOUT_MS` | hung one-shot kill | `120000` |
 | `ADVISE_MAX_CHARS` | transcript budget | `48000` |
-| `ADVISE_REAADVISE_AFTER_MONITOR` | after gated monitor + continue, run advise again | `true` |
+| `ADVISE_MAX_LOOPS` | max advise↔execute iterations per `--run` | `8` |
+| `ADVISE_REAADVISE_AFTER_GATHER` | after scan_results / list_bases / resolve_base, re-advise | `true` |
+| `ADVISE_REAADVISE_AFTER_MONITOR` | after gated monitor + continue, re-advise | `true` |
 | `ADVISE_AUTO_RESOLVE_LIST` | extra harmlessly auto-run cmds | `resolve_base,list_bases` |
 
 ## REPL command ABI

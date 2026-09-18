@@ -1,5 +1,8 @@
 /**
  * In-memory session transcript for Cursor CLI advise (SPEC_POC_ADVISE_CURSOR_CLI).
+ *
+ * Every advise turn reuses this log: prior commands + tool outputs (scan_results,
+ * disasm, monitor_writes JSON, bases JSON) so the agent can decide next actions.
  */
 
 export type AdviseEvent =
@@ -56,7 +59,7 @@ export class SessionLog {
 
     /**
      * Format transcript for the advise prompt with a soft char budget.
-     * Pins last monitor_writes-ish / scan_results outs when possible.
+     * Always prefers the newest tool dumps (tail) while keeping a short head.
      */
     formatForPrompt(maxChars: number): string {
         const lines: string[] = [];
@@ -83,12 +86,12 @@ export class SessionLog {
         let full = lines.join("\n");
         if (full.length <= maxChars) return full;
 
-        // Keep head timeline + tail (recent), prefer end.
-        const keepTail = Math.floor(maxChars * 0.75);
-        const keepHead = Math.floor(maxChars * 0.2);
+        // Prefer recent dumps heavily — agent decides from latest tool output.
+        const keepTail = Math.floor(maxChars * 0.8);
+        const keepHead = Math.floor(maxChars * 0.15);
         const head = full.slice(0, keepHead);
         const tail = full.slice(-keepTail);
-        return `${head}\n\n… [transcript truncated for budget] …\n\n${tail}`;
+        return `${head}\n\n… [transcript truncated for budget; recent tool outputs kept] …\n\n${tail}`;
     }
 }
 
