@@ -1,5 +1,9 @@
-# NEED_A_COOL_TITLE
-A tool to automate video game reverse engineering and cheat client development using LLMs and MCP. Proof is provided using the "Not a Hero" single player, DRM free game.
+# skid_factory
+A tool to automate video game reverse engineering and cheat client development using LLMs and MCP. Proof is provided using the "Not a Hero" single player, DRM free game. 
+
+After finding the value that writes to a pointer of our health/ammo values, use the `advise` command to have Cursor automate the entire pointer traversal and memory patching efforts. 
+
+In the future, this program will generate a DLL that provides keybindings to restore health to 100%, as a proof of concept. 
 
 ## Why ?
 This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing C I barely understood using Win32 API's I would partially grok to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
@@ -16,7 +20,6 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
 4. Set up MCP bridges for cheat-engine-mcp by running `git clone https://github.com/wrong-commit/mcp-cheat-engine.git`
 5. Install Not a Hero from Steam/GOG
 6. Install Cursor CLI (https://cursor.com/cli)
-7. Configure MCP serve in Cursor e.g `cursor mcp add ...`
 
 # Execution Instructions
 
@@ -110,7 +113,7 @@ advise_run
 8. Run `npm run mcp:start:tools` to launch a instance of each MCP tool. Manually launch the bridge scripts
 
 # Development Steps
-1. Complete POC_demo.md and prove that MCP can programtically scan pointer chains with user interaction
+1. Complete POC_demo.md and prove that MCP can programtically scan pointer chains with user interaction. **COMPLETE**
 2. Add to POC the ability to overwrite WRITE instruction address memory from pointer chain addresses with NOOP
 3. Setup https://github.com/BenteVE/DLL-Injector for DLL Injection through CLI. Add agent skill to use for injection
 4. Setup C++ DLL library template for cheat to write to (later phase)

@@ -2,12 +2,23 @@
   {
     "base": "0x987E30",
     "note": "ammo",
-    "savedAt": "2026-09-18T02:22:12.988Z",
+    "savedAt": "2026-09-18T04:02:28.427Z",
     "type": "double",
     "offsets": [
       0,
       20,
       256
+    ]
+  },
+  {
+    "base": "0x985F48",
+    "note": "health",
+    "savedAt": "2026-09-18T04:10:37.289Z",
+    "type": "double",
+    "offsets": [
+      2184,
+      20,
+      344
     ]
   }
 ]
