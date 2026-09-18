@@ -28,6 +28,11 @@ import {
 } from "./mcp/ce_tools.ts";
 import { monitorWrites, resolveMonitorWritesTypeAndSize } from "./handlers/monitor_writes.ts";
 import { clearAllWriteBreakpoints } from "./handlers/write_breakpoint.ts";
+import { createSessionLog } from "./advise/session_log.ts";
+import { buildAdvisePrompt } from "./advise/build_prompt.ts";
+import { runCursorOneShot } from "./advise/cursor_cli.ts";
+import { parseAdvisePlan, type AdvisePlan } from "./advise/parse_plan.ts";
+import { executeAdvisePlan, type AdviseRunners } from "./advise/execute_plan.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -497,6 +502,9 @@ function printHelp(): void {
                                   example: save_base_address 0x985F48 double 0x888,0x14,0x158 hp
                                   example: save_base_address 0x989B48 double 0,0,0x14,0x100 ammo
                                   example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158
+  advise [question]               Cursor CLI coach from session history (proposal only)
+  advise --run [question]         propose + auto-run scan_results / disassemble / monitor_writes
+  advise_run                      execute last advise plan (Enter before monitor_writes; Y/n after)
   help                            show this help
   quit | exit | cancel            exit REPL
 
@@ -506,7 +514,8 @@ Typical flow (ammo / any value):
   3. read regs + disasm → pointer chain (e.g. [[[ecx]+14]+100)
   4. scan int32 <ptr> up the chain until a static 00xxxxxx root
   5. save_base_address <root> <type> <offsets> <note>
-     then resolve_base / poc_patch_base (never poc_patch the root)`);
+     then resolve_base / poc_patch_base (never poc_patch the root)
+  Or: advise --run after a dump for suggested next commands`);
 }
 
 type DisassembleInstruction = {
@@ -736,6 +745,174 @@ async function pocTraceBaseAddress(
     let watched: string | undefined;
     let hasScanned = false;
     let lastScanType: CeScanType | undefined;
+    const sessionLog = createSessionLog();
+    let lastAdvisePlan: AdvisePlan | undefined;
+
+    const askUser = async (prompt: string): Promise<string> => {
+        process.stdout.write("\n");
+        return rl.question(prompt || "> ");
+    };
+
+    const runScanResults = async (limit: number): Promise<void> => {
+        if (!hasScanned) {
+            throw new Error("No active scan. Run scan <type> <value> first.");
+        }
+        if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+            throw new Error("Usage: scan_results [limit=1..1000]");
+        }
+        const dump = await callTool(mcp, CeTool.ScanResults, { limit });
+        const hits = dump.results;
+        const lines = [
+            `Scan results: total=${dump.total} returned=${hits.length}`,
+            "  Address = Value",
+            ...hits.map((hit) => `  ${hit.address}  =  ${hit.value}`),
+        ];
+        for (const line of lines) sessionLog.print(line);
+    };
+
+    const runDisassemble = async (rawAddr: string, ctx: number): Promise<void> => {
+        if (!Number.isInteger(ctx) || ctx < 0 || ctx > 100) {
+            throw new Error("Usage: disassemble <loc|hex> [ctx=0..100]");
+        }
+        const address = normalizeAddressSpec(rawAddr);
+        const disassemble = await callTool(mcp, CeTool.Disassemble, {
+            address,
+            before: ctx,
+            after: ctx,
+        });
+        // Capture formatted lines into session log
+        const instructions = extractDisassembleInstructions(disassemble);
+        if (instructions.length === 0) {
+            sessionLog.print("(no instructions)");
+            return;
+        }
+        const targetHex = extractDisassembleTargetHex(disassemble);
+        const rows = instructions.map((ins) => ({
+            address: String(ins.address ?? "").trim(),
+            bytes: String(ins.bytes ?? "").trim(),
+            opcode: String(ins.opcode ?? "").trim(),
+            target: isTargetInstruction(ins, targetHex),
+        }));
+        const addrWidth = Math.max(8, ...rows.map((r) => r.address.length));
+        const bytesWidth = Math.max(8, ...rows.map((r) => r.bytes.length));
+        for (const row of rows) {
+            const mark = row.target ? "  <-- target address" : "";
+            sessionLog.print(
+                `${row.address.padEnd(addrWidth)}  ${row.bytes.padEnd(bytesWidth)}  ${row.opcode}${mark}`,
+            );
+        }
+    };
+
+    const runMonitorWritesCmd = async (cmd: string): Promise<void> => {
+        const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
+        if (!monitorArgs) {
+            throw new Error("Invalid monitor_writes command");
+        }
+        watched = monitorArgs.address;
+        lastScanType = monitorArgs.type;
+        sessionLog.print(
+            `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
+        );
+        const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
+        printWriteDump(dump);
+        sessionLog.out(JSON.stringify({
+            watched_address: dump.watched_address,
+            type: dump.type,
+            size: dump.size,
+            writes: dump.writes.map(({ disasm: _d, ...rest }) => rest),
+        }, null, 2));
+        for (const hit of dump.writes) {
+            if (!hit.disasm || hit.disasm.length === 0) continue;
+            sessionLog.out(
+                `--- disasm ${hit.location} (rip=${hit.rip}, count=${hit.count}) ---`,
+            );
+        }
+    };
+
+    const runResolveBase = async (spec: string): Promise<void> => {
+        const entries = await loadBaseAddresses();
+        const entry = findBaseEntry(entries, spec);
+        if (!entry) {
+            throw new Error(`No saved base matching ${JSON.stringify(spec)}`);
+        }
+        const resolved = await resolveBasePath(mcp, entry);
+        const valueType = entry.type ?? "double";
+        const current = await callTool(mcp, CeTool.ReadMemory, {
+            address: resolved.valueAddress,
+            type: valueType,
+        });
+        for (const step of resolved.steps) sessionLog.print(step);
+        sessionLog.print(
+            `value @ ${resolved.valueAddress} (${valueType}) = ${JSON.stringify(current.value)}`,
+        );
+    };
+
+    const runListBases = async (): Promise<void> => {
+        const entries = await loadBaseAddresses();
+        if (entries.length === 0) {
+            sessionLog.print(`(no entries in ${BASE_ADDRESSES_PATH})`);
+        } else {
+            sessionLog.print(JSON.stringify(entries, null, 2));
+        }
+    };
+
+    const adviseRunners = (): AdviseRunners => ({
+        scanResults: runScanResults,
+        disassemble: runDisassemble,
+        monitorWrites: runMonitorWritesCmd,
+        resolveBase: runResolveBase,
+        listBases: runListBases,
+        askUser,
+        log: sessionLog,
+    });
+
+    const runAdvise = async (opts: {
+        execute: boolean;
+        question?: string;
+        reusePlan?: boolean;
+    }): Promise<void> => {
+        let plan = lastAdvisePlan;
+        if (!opts.reusePlan) {
+            const bases = await loadBaseAddresses();
+            const prompt = await buildAdvisePrompt(sessionLog, {
+                watched,
+                lastScanType,
+                basesJson: JSON.stringify(bases, null, 2),
+                executionMode: opts.execute ? "execute_allowlist" : "propose_only",
+                question: opts.question,
+            });
+            sessionLog.print("Calling Cursor CLI (agent -p --mode ask)…");
+            const reply = await runCursorOneShot(prompt, {
+                cwd: process.cwd(),
+            });
+            sessionLog.print("\n--- advise reply ---\n" + reply + "\n--- end advise ---");
+            plan = parseAdvisePlan(reply);
+            lastAdvisePlan = plan;
+            if (plan.steps.length > 0) {
+                sessionLog.print(
+                    `Parsed ${plan.steps.length} next command(s):\n` +
+                        plan.steps.map((s, i) => `  ${i + 1}. ${s}`).join("\n"),
+                );
+            } else {
+                sessionLog.print("(No Next commands block parsed from reply)");
+            }
+        } else if (!plan) {
+            sessionLog.printErr("No last advise plan. Run advise first.");
+            return;
+        }
+
+        if (!opts.execute || !plan) return;
+
+        const result = await executeAdvisePlan(plan, adviseRunners());
+        if (result.reAdvise) {
+            sessionLog.note("Re-advising after monitor_writes");
+            await runAdvise({
+                execute: true,
+                question: "Continue from the latest monitor_writes dump in the transcript.",
+                reusePlan: false,
+            });
+        }
+    };
 
     // Begin CE search with ce_scan_first using console input value as starting value.
     // Filter in loop calling ce_scan_next until "choose_address" is entered.
@@ -754,6 +931,7 @@ async function pocTraceBaseAddress(
         }
         const cmd = line.trim();
         if (!cmd) continue;
+        sessionLog.cmd(cmd);
 
         try {
             if (cmd === "help") {
@@ -765,35 +943,52 @@ async function pocTraceBaseAddress(
                 break;
             }
 
+            if (cmd === "advise" || cmd.startsWith("advise ")) {
+                const rest = cmd === "advise" ? "" : cmd.slice("advise ".length).trim();
+                const execute = rest === "--run" || rest.startsWith("--run ");
+                const question = execute
+                    ? rest === "--run"
+                        ? undefined
+                        : rest.slice("--run ".length).trim() || undefined
+                    : rest || undefined;
+                await runAdvise({ execute, question, reusePlan: false });
+                continue;
+            }
+
+            if (cmd === "advise_run" || cmd.startsWith("advise_run ")) {
+                const rest =
+                    cmd === "advise_run" ? "" : cmd.slice("advise_run ".length).trim();
+                if (rest === "--fresh" || rest.startsWith("--fresh ")) {
+                    const question =
+                        rest === "--fresh"
+                            ? undefined
+                            : rest.slice("--fresh ".length).trim() || undefined;
+                    await runAdvise({ execute: true, question, reusePlan: false });
+                } else {
+                    await runAdvise({ execute: true, reusePlan: true });
+                }
+                continue;
+            }
+
             if (cmd === "reset_scan") {
                 await callTool(mcp, CeTool.ScanReset, {});
                 hasScanned = false;
                 lastScanType = undefined;
-                console.log("Scan state reset; next scan <type> <value> will call ce_scan_first");
+                sessionLog.print(
+                    "Scan state reset; next scan <type> <value> will call ce_scan_first",
+                );
                 continue;
             }
 
             // scan_results [limit] → ce_scan_results
             const scanResultsCmd = /^scan_results(?:\s+(\d+))?$/i.exec(cmd);
             if (scanResultsCmd) {
-                if (!hasScanned) {
-                    console.error("No active scan. Run scan <type> <value> first.");
-                    continue;
-                }
                 const limit =
                     scanResultsCmd[1] !== undefined ? Number(scanResultsCmd[1]) : 50;
-                if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
-                    console.error("Usage: scan_results [limit=1..1000]");
-                    continue;
-                }
-                const dump = await callTool(mcp, CeTool.ScanResults, { limit });
-                const hits = dump.results;
-                console.log(
-                    `Scan results: total=${dump.total} returned=${hits.length}`,
-                );
-                console.log("  Address = Value");
-                for (const hit of hits) {
-                    console.log(`  ${hit.address}  =  ${hit.value}`);
+                try {
+                    await runScanResults(limit);
+                } catch (err) {
+                    sessionLog.printErr(err instanceof Error ? err.message : String(err));
                 }
                 continue;
             }
@@ -823,6 +1018,7 @@ async function pocTraceBaseAddress(
                     hasScanned = true;
                     lastScanType = parsed.type;
                     console.log(`ce_scan_first type=${parsed.type}: count=${first.count}`);
+                    sessionLog.out(`ce_scan_first type=${parsed.type}: count=${first.count}`);
                 } else {
                     // ce_scan_next has no `type` — vartype is locked by the prior first scan
                     const next = await callTool(mcp, CeTool.ScanNext, {
@@ -831,6 +1027,7 @@ async function pocTraceBaseAddress(
                         hex: parsed.hex,
                     });
                     console.log(`ce_scan_next: count=${next.count}`);
+                    sessionLog.out(`ce_scan_next: count=${next.count}`);
                 }
                 continue;
             }
@@ -877,102 +1074,33 @@ async function pocTraceBaseAddress(
                 cmd === "monitor_writes" ||
                 cmd.startsWith("monitor_writes ")
             ) {
-                const monitorArgs = parseMonitorWritesCommand(cmd, watched, lastScanType);
-                if (!monitorArgs) {
-                    continue;
+                try {
+                    await runMonitorWritesCmd(cmd);
+                } catch (err) {
+                    sessionLog.printErr(err instanceof Error ? err.message : String(err));
                 }
-                watched = monitorArgs.address;
-                lastScanType = monitorArgs.type;
-                console.log(
-                    `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
-                );
-                const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
-                printWriteDump(dump);
-
-                // FIXME: optional — ask Codex which writer to follow next
-                // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
-                // console.log(suggestion);
                 continue;
             }
-
-            // if (cmd === "disassemble_watched" || cmd.startsWith("disassemble_watched ")) {
-            //     if (!watched) {
-            //         console.error("No watched address yet. Run choose_address first.");
-            //         continue;
-            //     }
-            //     const countArg = cmd.slice("disassemble_watched".length).trim();
-            //     const count = countArg !== "" ? Number(countArg) : 15;
-            //     if (!Number.isInteger(count) || count < 1 || count > 200) {
-            //         console.error("Usage: disassemble_watched [count=1..200]");
-            //         continue;
-            //     }
-            //     console.log(
-            //         `Note: watched ${watched} is a data address; for code use: disassemble <rip from monitor_writes>`,
-            //     );
-            //     const disassemble = await callTool(mcp, CeTool.Disassemble, {
-            //         address: watched,
-            //         count,
-            //     });
-            //     console.log(disassemble);
-            //     continue;
-            // }
 
             if (cmd === "disassemble" || cmd.startsWith("disassemble ")) {
                 const rest = cmd === "disassemble" ? "" : cmd.slice("disassemble ".length).trim();
                 const parts = rest === "" ? [] : rest.split(/\s+/);
                 const rawAddr = parts[0];
                 if (!rawAddr) {
-                    console.error("Usage: disassemble <loc|hex> [ctx=5]");
-                    console.error("  shows ctx instructions above and below the target");
-                    console.error("  example: disassemble 0x7BFA4D");
-                    console.error("           disassemble 0x7BFA4D 8");
+                    sessionLog.printErr("Usage: disassemble <loc|hex> [ctx=5]");
                     continue;
                 }
                 const ctx = parts[1] !== undefined ? Number(parts[1]) : 5;
-                if (!Number.isInteger(ctx) || ctx < 0 || ctx > 100) {
-                    console.error("Usage: disassemble <loc|hex> [ctx=0..100]");
-                    continue;
+                try {
+                    await runDisassemble(rawAddr, ctx);
+                } catch (err) {
+                    sessionLog.printErr(err instanceof Error ? err.message : String(err));
                 }
-                const address = normalizeAddressSpec(rawAddr);
-                const disassemble = await callTool(mcp, CeTool.Disassemble, {
-                    address,
-                    before: ctx,
-                    after: ctx,
-                });
-                printDisassembly(disassemble);
                 continue;
             }
 
-            // Follow the address to the next writer
-            // if (cmd === "follow_address" || cmd.startsWith("follow_address ")) {
-            //     const parsed = parseFollowAddressCommand(cmd, lastScanType);
-            //     if (!parsed || "error" in parsed) {
-            //         console.error(parsed?.error ?? "Usage: follow_address <loc|hex> [type]");
-            //         continue;
-            //     }
-
-            //     const cleared = await clearAllWriteBreakpoints(mcp);
-            //     if (cleared > 0) {
-            //         console.log(`Cleared ${cleared} leftover breakpoint(s)`);
-            //     }
-            //     watched = parsed.target;
-            //     lastScanType = parsed.type;
-            //     console.log(
-            //         `Selected ${watched} type=${parsed.type}. Run monitor_writes to find writers.`,
-            //     );
-            //     continue;
-            // }
-
             if (cmd === "list_bases" || cmd === "show_base_addresses") {
-                const entries = await loadBaseAddresses();
-                if (entries.length === 0) {
-                    console.log(`(no entries in ${BASE_ADDRESSES_PATH})`);
-                } else {
-                    console.log(JSON.stringify(entries, null, 2));
-                    console.log(
-                        "Tip: patch ammo with poc_patch_base <idx> <value> — do not poc_patch the static base itself",
-                    );
-                }
+                await runListBases();
                 continue;
             }
 
@@ -980,25 +1108,14 @@ async function pocTraceBaseAddress(
                 const spec =
                     cmd === "resolve_base" ? "" : cmd.slice("resolve_base ".length).trim();
                 if (!spec) {
-                    console.error("Usage: resolve_base <idx|addr>");
+                    sessionLog.printErr("Usage: resolve_base <idx|addr>");
                     continue;
                 }
-                const entries = await loadBaseAddresses();
-                const entry = findBaseEntry(entries, spec);
-                if (!entry) {
-                    console.error(`No saved base matching ${JSON.stringify(spec)}`);
-                    continue;
+                try {
+                    await runResolveBase(spec);
+                } catch (err) {
+                    sessionLog.printErr(err instanceof Error ? err.message : String(err));
                 }
-                const resolved = await resolveBasePath(mcp, entry);
-                const valueType = entry.type ?? "double";
-                const current = await callTool(mcp, CeTool.ReadMemory, {
-                    address: resolved.valueAddress,
-                    type: valueType,
-                });
-                console.log(resolved.steps.join("\n"));
-                console.log(
-                    `value @ ${resolved.valueAddress} (${valueType}) = ${JSON.stringify(current.value)}`,
-                );
                 continue;
             }
 

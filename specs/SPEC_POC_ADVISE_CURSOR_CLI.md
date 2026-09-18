@@ -1,6 +1,6 @@
 # SPEC: Cursor CLI one-shot next-step advisor
 
-Status: draft (not implemented)  
+Status: implemented (POC wiring; pin Cursor CLI flags if `agent -p --mode ask` drifts)  
 Related: [`POC_demo.md`](./POC_demo.md), [`SPEC_POC_FIND_WRITE_ADDRESS.md`](./SPEC_POC_FIND_WRITE_ADDRESS.md), [`../README.md`](../README.md) (pointer-trace workflow)
 
 ## Goal

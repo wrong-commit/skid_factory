@@ -85,6 +85,19 @@ Goal: turn a changing heap value (ammo, HP, …) into a **module-static pointer 
 
 **Do not** `poc_patch` a saved base address. Use `poc_patch` only on a resolved leaf (e.g. the address `resolve_base` prints), or always prefer `poc_patch_base`.
 
+### Advise (Cursor CLI coach)
+
+After any dump or scan, you can ask the POC for next steps (requires Cursor `agent` CLI on PATH):
+
+```text
+advise
+advise which hit looks static?
+advise --run
+advise_run
+```
+
+`advise --run` / `advise_run` auto-executes `scan_results`, `disassemble`, and `monitor_writes` from the model’s plan. For `monitor_writes`, press Enter when ready to interact in-game, then Y/n to continue (then it re-advises by default). See [`specs/SPEC_POC_ADVISE_CURSOR_CLI.md`](specs/SPEC_POC_ADVISE_CURSOR_CLI.md).
+
 ## Planned (not wired yet)
 
 1. Run `npm run mpc:start` to start the MCP server
