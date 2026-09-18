@@ -113,6 +113,135 @@ function formatHexAddr(n: number): string {
     return `0x${Math.trunc(n).toString(16).toUpperCase()}`;
 }
 
+/** Parse `0x888,0x14,0x158` or `2184,20,344` into offset ints. */
+function parseOffsetList(raw: string): number[] | undefined {
+    const parts = raw.split(",").map((s) => s.trim()).filter(Boolean);
+    if (parts.length === 0) return undefined;
+    const out: number[] = [];
+    for (const p of parts) {
+        if (/^0x[0-9a-fA-F]+$/i.test(p)) {
+            out.push(Number.parseInt(p, 16));
+        } else if (/^\d+$/.test(p)) {
+            out.push(Number.parseInt(p, 10));
+        } else {
+            return undefined;
+        }
+    }
+    return out;
+}
+
+function parseSingleOffsetToken(raw: string): number | undefined {
+    const t = raw.trim();
+    if (/^0x[0-9a-fA-F]+$/i.test(t)) return Number.parseInt(t, 16);
+    if (/^\d+$/.test(t)) return Number.parseInt(t, 10);
+    return undefined;
+}
+
+/**
+ * From a note like `[[[base]+0x888]+0x14]+0x158` or `[[[base]]+0x14]+0x100`,
+ * build CE-style offsets[] (last = value offset).
+ */
+function parseOffsetsFromPathNote(note: string): number[] | undefined {
+    const compact = note.replace(/\s+/g, "");
+    const baseIdx = compact.toLowerCase().indexOf("base");
+    if (baseIdx < 0) return undefined;
+
+    const after = compact.slice(baseIdx + 4);
+    let i = 0;
+    let closeCount = 0;
+    while (i < after.length && after[i] === "]") {
+        closeCount++;
+        i++;
+    }
+
+    const plusOffsets: number[] = [];
+    const plusRe = /\+(0x[0-9a-fA-F]+|\d+)/gi;
+    let m: RegExpExecArray | null;
+    const afterForPlus = after.slice(i);
+    while ((m = plusRe.exec(afterForPlus)) !== null) {
+        const tok = m[1]!;
+        plusOffsets.push(
+            tok.toLowerCase().startsWith("0x")
+                ? Number.parseInt(tok, 16)
+                : Number.parseInt(tok, 10),
+        );
+    }
+    if (plusOffsets.length === 0) return undefined;
+
+    // `[[[base]+0x888]...` → one `]` then `+` → offsets are just the +list
+    // `[[[base]]+0x14]...` → two+ `]` then `+` → that many leading 0 derefs
+    if (closeCount <= 1) return plusOffsets;
+    return [...Array.from({ length: closeCount }, () => 0), ...plusOffsets];
+}
+
+function inferTypeFromNote(note: string): CeScanType | undefined {
+    const m = /\b(double|float|int64|int32|int16|int8|uint8|byte|int|string|wstring)\b/i.exec(
+        note,
+    );
+    if (!m) return undefined;
+    return resolveCeScanType(m[1]!);
+}
+
+/**
+ * save_base_address <addr> [type] [o1,o2,... | o1 o2 ...] [note...]
+ * Type/offsets also inferred from a path note when omitted.
+ */
+function parseSaveBaseAddressCommand(rest: string): {
+    base: string;
+    type?: CeScanType;
+    offsets?: number[];
+    note: string;
+} | { error: string } {
+    const tokens = rest.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length < 1) {
+        return {
+            error:
+                "Usage: save_base_address <addr> [type] [0x888,0x14,0x158] <note...>\n" +
+                "  example: save_base_address 0x985F48 double 0x888,0x14,0x158 hp\n" +
+                "  example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158",
+        };
+    }
+
+    const base = normalizeAddressSpec(tokens[0]!);
+    let idx = 1;
+    let type: CeScanType | undefined;
+    let offsets: number[] | undefined;
+    const noteParts: string[] = [];
+
+    if (idx < tokens.length) {
+        const maybeType = resolveCeScanType(tokens[idx]!);
+        if (maybeType) {
+            type = maybeType;
+            idx++;
+        }
+    }
+
+    if (idx < tokens.length && tokens[idx]!.includes(",")) {
+        const list = parseOffsetList(tokens[idx]!);
+        if (list) {
+            offsets = list;
+            idx++;
+        }
+    } else {
+        const collected: number[] = [];
+        while (idx < tokens.length) {
+            const off = parseSingleOffsetToken(tokens[idx]!);
+            if (off === undefined) break;
+            collected.push(off);
+            idx++;
+        }
+        if (collected.length > 0) offsets = collected;
+    }
+
+    noteParts.push(...tokens.slice(idx));
+    const note = noteParts.join(" ").trim() || base;
+
+    if (!type) type = inferTypeFromNote(note);
+    if (!offsets) offsets = parseOffsetsFromPathNote(note);
+
+    return { base, type, offsets, note };
+}
+
 function parsePointerRead(value: unknown): number {
     if (typeof value === "number" && Number.isFinite(value)) {
         return value >>> 0; // force uint32 for 32-bit game pointers
@@ -343,24 +472,41 @@ function printHelp(): void {
   scan <type> <value>             ce_scan_first (or next filter after first scan)
                                   types: ${CE_SCAN_TYPES.join(", ")}
                                   integers: decimal, 0xHEX, or bare hex (1BE4A908)
+                                  example: scan double 12
+                                           scan int32 0x1BE4A908
   scan_results [limit=50]         ce_scan_results — list addresses from current scan
+                                  example: scan_results 50
   reset_scan                      ce_scan_reset + clear local scan state
-  monitor_writes <addr> [type|size] [ms]  timed write-watch collect via ce_eval_lua
+  monitor_writes <addr> [type|size] [ms]  timed write-watch; dumps regs/derefs/disasm
                                   example: monitor_writes 0C505970 double 5000
                                   default type: last scan type (else int32), ms=3000
   show_write_locations            same as monitor_writes using current watched address
   disassemble <loc|hex> [ctx=5]   disassemble target with ctx lines above and below
                                   tip: use a rip from monitor_writes, not the data address
-  poc_patch <addr> <value> [type] write memory via ce_write_memory (raw address — NOT a static base)
+                                  example: disassemble 0x7BFA4D
+  poc_patch <addr> <value> [type] write memory at a resolved address (NOT a static base)
                                   example: poc_patch 0C505970 99 double
-  poc_patch_base <idx|addr> <value> [type] resolve offsets[] then write (safe for saved bases)
+  poc_patch_base <idx|addr> <value> [type] follow offsets[] in base_addresses.json, then write
                                   example: poc_patch_base 0 99
-                                  example: poc_patch_base 0x989B48 99 double
-  resolve_base <idx|addr>         print pointer-chain resolution for a saved base
-  list_bases                      print base_addresses.json for debugging
-  save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
+                                           poc_patch_base 0x989B48 99 double
+  resolve_base <idx|addr>         print pointer-chain steps + current value
+                                  example: resolve_base 0
+  list_bases                      print base_addresses.json
+  save_base_address <addr> [type] [offsets] <note...>
+                                  writes type + offsets[] into base_addresses.json
+                                  example: save_base_address 0x985F48 double 0x888,0x14,0x158 hp
+                                  example: save_base_address 0x989B48 double 0,0,0x14,0x100 ammo
+                                  example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158
   help                            show this help
-  quit | exit | cancel            exit without saving`);
+  quit | exit | cancel            exit without saving
+
+Typical flow (ammo / any value):
+  1. scan <type> <value> → change in-game → scan again → scan_results
+  2. monitor_writes <hit> <type> 5000   (shoot / spend to force writes)
+  3. read regs + disasm → pointer chain (e.g. [[[ecx]+14]+100)
+  4. scan int32 <ptr> up the chain until a static 00xxxxxx root
+  5. save_base_address <root> <type> <offsets> <note>
+     then resolve_base / poc_patch_base (never poc_patch the root)`);
 }
 
 type DisassembleInstruction = {
@@ -988,20 +1134,30 @@ async function pocTraceBaseAddress(
 
             if (cmd.startsWith("save_base_address ")) {
                 const rest = cmd.slice("save_base_address ".length).trim();
-                const parsed = /^(\S+)\s+(.+)$/.exec(rest);
-                if (!parsed) {
-                    console.error("Usage: save_base_address <loc|hex> <note...>");
+                const parsed = parseSaveBaseAddressCommand(rest);
+                if ("error" in parsed) {
+                    console.error(parsed.error);
                     continue;
                 }
-                const base = parsed[1]!;
-                const note = parsed[2]!.trim();
                 const entry: BaseAddressEntry = {
-                    base,
-                    note,
+                    base: parsed.base,
+                    note: parsed.note,
                     savedAt: new Date().toISOString(),
+                    ...(parsed.type ? { type: parsed.type } : {}),
+                    ...(parsed.offsets && parsed.offsets.length > 0
+                        ? { offsets: parsed.offsets }
+                        : {}),
                 };
+                if (!entry.offsets || !entry.type) {
+                    console.error(
+                        "Warning: missing type and/or offsets — poc_patch_base will not work until you add them.\n" +
+                            "  Prefer: save_base_address <addr> double 0x888,0x14,0x158 <note>",
+                    );
+                }
                 await appendBaseAddress(entry);
-                console.log(`Appended to ${BASE_ADDRESSES_PATH}: base=${base} note=${JSON.stringify(note)}`);
+                console.log(
+                    `Appended to ${BASE_ADDRESSES_PATH}: ${JSON.stringify(entry, null, 2)}`,
+                );
                 break;
             }
 

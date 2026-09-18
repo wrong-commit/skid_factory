@@ -22,15 +22,68 @@ Cheat Engine's hardware debugging driver is used to monitor writes to memory add
 
 ## Launch the pointer-trace POC
 
-With Cheat Engine + its MCP bridge already running and attached to the game:
+With Cheat Engine running, the Lua bridge loaded (`bridges/cheat-engine/bridge.lua`), and the game attached:
 
 ```bash
 npm run poc:trace_pointer
 ```
 
-Example: `npm run poc`
+(Alias: `npm run poc`.) Disable Cursor’s own CE MCP while the POC runs (it spawns `mcp:start` itself) — see `.cursor/mcp.json.disable`.
 
-See [`specs/POC_demo.md`](specs/POC_demo.md) for the full demo checklist.
+Type `help` in the REPL for the full command list.
+
+## Workflow: find a stable base, then patch
+
+Goal: turn a changing heap value (ammo, HP, …) into a **module-static pointer path**, save it, and write through that path safely.
+
+### Case study — Not a Hero ammo (`double`)
+
+1. **Find the value** — scan for the in-game number, change it (fire), filter, repeat until a few candidates remain:
+   ```text
+   scan double 12
+   scan_results 50
+   ```
+2. **Find what writes it** — watch a candidate while the value changes:
+   ```text
+   monitor_writes 0C505970 double 5000
+   ```
+   The dump includes regs, fixed derefs, and ±5 disasm. Ammo was stored by roughly:
+   `movsd [eax+0x100], …` with `eax` from `[[[ecx]+0x14]]`.
+3. **Walk pointers toward static memory** — scan for the interesting pointer (often a register from the dump, or `[ecx]`), prefer low `00xxxxxx` hits near the exe:
+   ```text
+   reset_scan
+   scan int32 0x0C6BD27C
+   scan_results 50
+   scan int32 0x987E30
+   scan_results 50
+   ```
+   Empty pointer-scans on a candidate usually mean you’ve hit a **root** (nothing else points at it).
+4. **Save the root + path** — include type and offsets (or a path note the POC can parse):
+   ```text
+   save_base_address 0x989B48 double 0,0,0x14,0x100 ammo [[[base]]+0x14]+0x100
+   save_base_address 0x985F48 double 0x888,0x14,0x158 hp
+   save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158
+   ```
+   That writes `type` + `offsets[]` into `base_addresses.json` automatically.
+5. **Patch via the chain — never write the static base itself** (that overwrites a pointer and can crash):
+   ```text
+   list_bases
+   resolve_base 0
+   poc_patch_base 0 99
+   ```
+
+### General recipe (any value)
+
+| Step | What to do | POC commands |
+| --- | --- | --- |
+| 1 | Exact / next-scan until few hits | `scan <type> <value>`, `scan_results` |
+| 2 | Write-watch while the value changes | `monitor_writes <addr> <type> <ms>` |
+| 3 | Read disasm + regs → expression for the store | (in the dump; optional `disassemble <rip>`) |
+| 4 | Pointer-scan upward; keep survivors after level change | `scan int32 <ptr>`, `reset_scan` as needed |
+| 5 | Stop at a static root; save with type + offsets | `save_base_address <root> <type> <o1,o2,...> <note>` |
+| 6 | Verify + patch leaf only | `resolve_base <idx>`, `poc_patch_base <idx> <value>` |
+
+**Do not** `poc_patch` a saved base address. Use `poc_patch` only on a resolved leaf (e.g. the address `resolve_base` prints), or always prefer `poc_patch_base`.
 
 ## Planned (not wired yet)
 
