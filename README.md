@@ -1,9 +1,15 @@
 # skid_factory
 A tool to automate video game reverse engineering and cheat client development using LLMs and MCP. Proof is provided using the "Not a Hero" single player, DRM free game. 
 
-After finding the the leaf pointer of our health/ammo values, use the `advise` command to have Cursor automate the entire memory writing process, pointer traversal and memory patching efforts. 
+After finding the the leaf pointer of our health/ammo values, use the `advise` command to have Cursor automate the entire memory reading process, pointer traversal and memory patching efforts. 
 
-In the future, this program will generate a DLL that provides keybindings to restore health to 100%, as a proof of concept. 
+In the future, this program will generate a DLL that provides keybindings to restore health to 100%, as a proof of concept.
+
+## Demo
+
+[![Demo: Not a Hero pointer-trace → `poc_patch_base` ammo to 99](demos/example_hacking_thumb.jpg)](demos/example_hacking.mp4)
+
+[Watch the demo video](demos/example_hacking.mp4) (~4.5 min) — scan → pointer walk → `save_base_address` → `poc_patch_base`, with Cursor `advise` in the loop. No human interaction other than reducing player ammo when prompted by the agent.
 
 ## Why ?
 This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing C I barely understood using Win32 API's I would partially grok to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
