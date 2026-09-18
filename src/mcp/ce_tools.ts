@@ -18,6 +18,8 @@ export const CeTool = {
     /** @deprecated Prefer custom handler monitorWrites → ce_eval_lua. */
     GetWriteLocations: "get_write_locations",
     Disassemble: "ce_disassemble",
+    ReadMemory: "ce_read_memory",
+    WriteMemory: "ce_write_memory",
 } as const;
 
 export type CeToolName = (typeof CeTool)[keyof typeof CeTool];
@@ -271,6 +273,28 @@ export const ceToolCatalog = {
         }),
         result: DisassembleResultSchema,
     },
+    [CeTool.ReadMemory]: {
+        args: z.object({
+            address: z.union([z.string(), z.number()]),
+            type: CeScanTypeSchema.optional().default("int32"),
+        }),
+        result: z.object({
+            address: z.string(),
+            type: z.string(),
+            value: z.union([z.string(), z.number(), z.boolean(), z.null()]).optional(),
+        }),
+    },
+    [CeTool.WriteMemory]: {
+        args: z.object({
+            address: z.union([z.string(), z.number()]),
+            value: z.union([z.string(), z.number()]),
+            type: CeScanTypeSchema.optional().default("int32"),
+        }),
+        result: z.object({
+            ok: z.boolean(),
+            address: z.string(),
+        }),
+    },
 } as const;
 
 export type CeToolCatalog = typeof ceToolCatalog;
@@ -289,6 +313,8 @@ export const REQUIRED_CE_TOOLS: readonly CeToolName[] = [
     CeTool.ScanReset,
     CeTool.EvalLua,
     CeTool.Disassemble,
+    CeTool.ReadMemory,
+    CeTool.WriteMemory,
 ];
 
 /**

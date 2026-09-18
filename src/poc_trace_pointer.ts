@@ -37,6 +37,14 @@ type BaseAddressEntry = {
     base: string;
     note: string;
     savedAt: string;
+    /**
+     * CE-style pointer path. All but last: add offset then read pointer.
+     * Last: add offset to get the value address (no deref).
+     * Example ammo: [0, 0, 0x14, 0x100] → *(*(*base)+0x14)+0x100
+     */
+    offsets?: number[];
+    /** Value type at the resolved address. */
+    type?: CeScanType;
 };
 
 /**
@@ -96,6 +104,129 @@ async function appendBaseAddress(entry: BaseAddressEntry): Promise<void> {
     const entries = await loadBaseAddresses();
     entries.push(entry);
     await writeFile(BASE_ADDRESSES_PATH, JSON.stringify(entries, null, 2));
+}
+
+function formatHexAddr(n: number): string {
+    if (!Number.isFinite(n) || n < 0) {
+        return String(n);
+    }
+    return `0x${Math.trunc(n).toString(16).toUpperCase()}`;
+}
+
+function parsePointerRead(value: unknown): number {
+    if (typeof value === "number" && Number.isFinite(value)) {
+        return value >>> 0; // force uint32 for 32-bit game pointers
+    }
+    if (typeof value === "string") {
+        const t = value.trim();
+        if (/^0x[0-9a-fA-F]+$/i.test(t)) {
+            return Number.parseInt(t, 16) >>> 0;
+        }
+        if (/^[0-9a-fA-F]+$/i.test(t) && /[A-Fa-f]/.test(t)) {
+            return Number.parseInt(t, 16) >>> 0;
+        }
+        if (/^\d+$/.test(t)) {
+            return Number.parseInt(t, 10) >>> 0;
+        }
+    }
+    throw new Error(`Not a pointer value: ${JSON.stringify(value)}`);
+}
+
+/**
+ * Resolve CE-style offsets: for each offset except the last, addr = readPtr(addr+off);
+ * final value address = addr + lastOff.
+ * Runs entirely inside CE Lua (readBytes fallback) so nil reads surface as real errors.
+ */
+async function resolveBasePath(
+    mcp: Client,
+    entry: BaseAddressEntry,
+): Promise<{ steps: string[]; valueAddress: string }> {
+    const offsets = entry.offsets;
+    if (!offsets || offsets.length === 0) {
+        throw new Error(
+            `Base ${entry.base} has no offsets[] — cannot resolve (refusing to patch the static pointer itself)`,
+        );
+    }
+
+    const baseNum = parsePointerRead(normalizeAddressSpec(entry.base));
+    const offsetsLit = offsets.join(",");
+    const code = `
+local function read_u32(addr)
+  if type(readInteger) == "function" then
+    local ok, v = pcall(readInteger, addr)
+    if ok and type(v) == "number" then
+      if v < 0 then v = v + 0x100000000 end
+      return v % 0x100000000
+    end
+  end
+  if type(readBytes) == "function" then
+    local ok, b = pcall(readBytes, addr, 4, true)
+    if ok and type(b) == "table" and #b >= 4 then
+      return (b[1] + b[2]*256 + b[3]*65536 + b[4]*16777216) % 0x100000000
+    end
+  end
+  return nil
+end
+
+local base = ${baseNum}
+local offsets = {${offsetsLit}}
+local addr = base
+local steps = { string.format("base 0x%X", base) }
+for i = 1, #offsets - 1 do
+  local off = offsets[i]
+  local at = (addr + off) % 0x100000000
+  local next = read_u32(at)
+  if next == nil then
+    error(string.format("nil u32 read at 0x%X (step %d; process attached / alive?)", at, i - 1))
+  end
+  steps[#steps+1] = string.format("[0x%X+0x%X] -> 0x%X", addr, off, next)
+  if next == 0 then
+    error("null pointer at step " .. tostring(i - 1))
+  end
+  addr = next
+end
+local last = offsets[#offsets]
+local valueAddr = (addr + last) % 0x100000000
+steps[#steps+1] = string.format("0x%X+0x%X -> value @ 0x%X", addr, last, valueAddr)
+local parts = {}
+for i = 1, #steps do
+  parts[#parts+1] = string.format("%q", steps[i])
+end
+return string.format('{"steps":[%s],"valueAddress":"0x%X"}', table.concat(parts, ","), valueAddr)
+`;
+
+    const raw = await callTool(mcp, CeTool.EvalLua, { code });
+    let text: string;
+    if (typeof raw === "string") {
+        text = raw;
+    } else if (raw && typeof raw === "object") {
+        const obj = raw as { result?: unknown; value?: unknown };
+        const v = obj.result ?? obj.value;
+        if (typeof v !== "string") {
+            throw new Error(`resolve_base: unexpected eval result: ${JSON.stringify(raw)}`);
+        }
+        text = v;
+    } else {
+        throw new Error(`resolve_base: unexpected eval result: ${JSON.stringify(raw)}`);
+    }
+
+    const parsed = JSON.parse(text) as { steps: string[]; valueAddress: string };
+    if (!Array.isArray(parsed.steps) || typeof parsed.valueAddress !== "string") {
+        throw new Error(`resolve_base: bad payload: ${text}`);
+    }
+    return parsed;
+}
+
+function findBaseEntry(
+    entries: BaseAddressEntry[],
+    spec: string,
+): BaseAddressEntry | undefined {
+    const trimmed = spec.trim();
+    if (/^\d+$/.test(trimmed)) {
+        return entries[Number.parseInt(trimmed, 10)];
+    }
+    const want = normalizeHexAddr(normalizeAddressSpec(trimmed));
+    return entries.find((e) => normalizeHexAddr(normalizeAddressSpec(e.base)) === want);
 }
 
 /**
@@ -220,6 +351,13 @@ function printHelp(): void {
   show_write_locations            same as monitor_writes using current watched address
   disassemble <loc|hex> [ctx=5]   disassemble target with ctx lines above and below
                                   tip: use a rip from monitor_writes, not the data address
+  poc_patch <addr> <value> [type] write memory via ce_write_memory (raw address — NOT a static base)
+                                  example: poc_patch 0C505970 99 double
+  poc_patch_base <idx|addr> <value> [type] resolve offsets[] then write (safe for saved bases)
+                                  example: poc_patch_base 0 99
+                                  example: poc_patch_base 0x989B48 99 double
+  resolve_base <idx|addr>         print pointer-chain resolution for a saved base
+  list_bases                      print base_addresses.json for debugging
   save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
   quit | exit | cancel            exit without saving`);
@@ -460,6 +598,9 @@ async function pocTraceBaseAddress(
     while (true) {
         let line: string;
         try {
+            // Newline first: on Windows, question() does cursorTo(0) and can
+            // overwrite the last console.log line (e.g. 10th scan hit).
+            process.stdout.write("\n");
             line = await rl.question("> ");
         } catch {
             // Interface closed (Ctrl+C / shutdown)
@@ -675,6 +816,175 @@ async function pocTraceBaseAddress(
             //     );
             //     continue;
             // }
+
+            if (cmd === "list_bases" || cmd === "show_base_addresses") {
+                const entries = await loadBaseAddresses();
+                if (entries.length === 0) {
+                    console.log(`(no entries in ${BASE_ADDRESSES_PATH})`);
+                } else {
+                    console.log(JSON.stringify(entries, null, 2));
+                    console.log(
+                        "Tip: patch ammo with poc_patch_base <idx> <value> — do not poc_patch the static base itself",
+                    );
+                }
+                continue;
+            }
+
+            if (cmd === "resolve_base" || cmd.startsWith("resolve_base ")) {
+                const spec =
+                    cmd === "resolve_base" ? "" : cmd.slice("resolve_base ".length).trim();
+                if (!spec) {
+                    console.error("Usage: resolve_base <idx|addr>");
+                    continue;
+                }
+                const entries = await loadBaseAddresses();
+                const entry = findBaseEntry(entries, spec);
+                if (!entry) {
+                    console.error(`No saved base matching ${JSON.stringify(spec)}`);
+                    continue;
+                }
+                const resolved = await resolveBasePath(mcp, entry);
+                const valueType = entry.type ?? "double";
+                const current = await callTool(mcp, CeTool.ReadMemory, {
+                    address: resolved.valueAddress,
+                    type: valueType,
+                });
+                console.log(resolved.steps.join("\n"));
+                console.log(
+                    `value @ ${resolved.valueAddress} (${valueType}) = ${JSON.stringify(current.value)}`,
+                );
+                continue;
+            }
+
+            if (cmd === "poc_patch_base" || cmd.startsWith("poc_patch_base ")) {
+                const rest =
+                    cmd === "poc_patch_base" ? "" : cmd.slice("poc_patch_base ".length).trim();
+                const parts = rest === "" ? [] : rest.split(/\s+/);
+                if (parts.length < 2) {
+                    console.error("Usage: poc_patch_base <idx|addr> <value> [type]");
+                    console.error("  example: poc_patch_base 0 99");
+                    continue;
+                }
+                const entries = await loadBaseAddresses();
+                const entry = findBaseEntry(entries, parts[0]!);
+                if (!entry) {
+                    console.error(`No saved base matching ${JSON.stringify(parts[0])}`);
+                    continue;
+                }
+                const typeRaw = parts[2];
+                const type =
+                    (typeRaw ? resolveCeScanType(typeRaw) : undefined) ??
+                    entry.type ??
+                    lastScanType ??
+                    "double";
+                if (typeRaw && !resolveCeScanType(typeRaw)) {
+                    console.error(
+                        `Unknown type: ${typeRaw}. Types: ${CE_SCAN_TYPES.join(", ")}`,
+                    );
+                    continue;
+                }
+
+                let value: string | number = parts[1]!;
+                let hex = false;
+                try {
+                    const parsed = parseScanValue(type, parts[1]!);
+                    value = parsed.value;
+                    hex = parsed.hex;
+                } catch (err) {
+                    console.error(err instanceof Error ? err.message : err);
+                    continue;
+                }
+                if (hex && typeof value === "string") {
+                    value = Number.parseInt(value, 16);
+                    if (!Number.isFinite(value)) {
+                        console.error(`Invalid hex value: ${parts[1]}`);
+                        continue;
+                    }
+                }
+
+                const resolved = await resolveBasePath(mcp, entry);
+                console.log(resolved.steps.join("\n"));
+                const written = await callTool(mcp, CeTool.WriteMemory, {
+                    address: resolved.valueAddress,
+                    value,
+                    type,
+                });
+                const readBack = await callTool(mcp, CeTool.ReadMemory, {
+                    address: resolved.valueAddress,
+                    type,
+                });
+                console.log(
+                    `poc_patch_base ok=${written.ok} address=${written.address} type=${type} wrote=${JSON.stringify(value)} read=${JSON.stringify(readBack.value)}`,
+                );
+                continue;
+            }
+
+            if (cmd === "poc_patch" || cmd.startsWith("poc_patch ")) {
+                const rest = cmd === "poc_patch" ? "" : cmd.slice("poc_patch ".length).trim();
+                const parts = rest === "" ? [] : rest.split(/\s+/);
+                if (parts.length < 2) {
+                    console.error("Usage: poc_patch <addr> <value> [type]");
+                    console.error("  example: poc_patch 0C505970 99 double");
+                    console.error(
+                        "  To patch via a saved base pointer chain, use: poc_patch_base <idx> <value>",
+                    );
+                    continue;
+                }
+                const address = normalizeAddressSpec(parts[0]!);
+                const bases = await loadBaseAddresses();
+                const matchedBase = findBaseEntry(bases, parts[0]!);
+                if (matchedBase) {
+                    console.error(
+                        `Refusing: ${address} is a saved static base (writing it corrupts a pointer). Use: poc_patch_base ${parts[0]} ${parts[1]}${parts[2] ? ` ${parts[2]}` : ""}`,
+                    );
+                    continue;
+                }
+                const valueRaw = parts[1]!;
+                const typeRaw = parts[2];
+                const type =
+                    (typeRaw ? resolveCeScanType(typeRaw) : undefined) ??
+                    lastScanType ??
+                    "int32";
+                if (typeRaw && !resolveCeScanType(typeRaw)) {
+                    console.error(
+                        `Unknown type: ${typeRaw}. Types: ${CE_SCAN_TYPES.join(", ")}`,
+                    );
+                    continue;
+                }
+
+                let value: string | number = valueRaw;
+                let hex = false;
+                try {
+                    const parsed = parseScanValue(type, valueRaw);
+                    value = parsed.value;
+                    hex = parsed.hex;
+                } catch (err) {
+                    console.error(err instanceof Error ? err.message : err);
+                    continue;
+                }
+                // ce_write_memory has no hex flag — pass a decimal/string CE understands.
+                if (hex && typeof value === "string") {
+                    value = Number.parseInt(value, 16);
+                    if (!Number.isFinite(value)) {
+                        console.error(`Invalid hex value: ${valueRaw}`);
+                        continue;
+                    }
+                }
+
+                const written = await callTool(mcp, CeTool.WriteMemory, {
+                    address,
+                    value,
+                    type,
+                });
+                const readBack = await callTool(mcp, CeTool.ReadMemory, {
+                    address,
+                    type,
+                });
+                console.log(
+                    `poc_patch ok=${written.ok} address=${written.address} type=${type} wrote=${JSON.stringify(value)} read=${JSON.stringify(readBack.value)}`,
+                );
+                continue;
+            }
 
             if (cmd.startsWith("save_base_address ")) {
                 const rest = cmd.slice("save_base_address ".length).trim();

@@ -169,7 +169,31 @@ local function parse_addr(a)
   if type(a) == "string" then
     local n = getAddressSafe(a)
     if n then return n end
-    return tonumber(a, 16) or tonumber(a)
+    -- tonumber("0x..", 16) is nil in Lua; strip prefix first
+    local hex = a:match("^0[xX](%x+)$") or a:match("^(%x+)$")
+    if hex and (#hex >= 1) then
+      local h = tonumber(hex, 16)
+      if h then return h end
+    end
+    return tonumber(a)
+  end
+  return nil
+end
+
+-- Unsigned 32-bit read; readInteger can return nil on some CE builds / dead targets.
+local function read_u32(addr)
+  if type(readInteger) == "function" then
+    local ok, v = pcall(readInteger, addr)
+    if ok and type(v) == "number" then
+      if v < 0 then v = v + 0x100000000 end
+      return v % 0x100000000
+    end
+  end
+  if type(readBytes) == "function" then
+    local ok, b = pcall(readBytes, addr, 4, true)
+    if ok and type(b) == "table" and #b >= 4 then
+      return (b[1] + b[2] * 256 + b[3] * 65536 + b[4] * 16777216) % 0x100000000
+    end
   end
   return nil
 end
@@ -229,13 +253,19 @@ local function read_value(addr, vtype)
   end
   if vtype == "int16"  then return readSmallInteger(addr, true) end
   if vtype == "uint16" then return readSmallInteger(addr, false) end
-  if vtype == "int32" or vtype == "int" then return readInteger(addr) end
+  if vtype == "int32" or vtype == "int" then
+    local u = read_u32(addr)
+    if u == nil then return nil end
+    -- CE UI often shows signed; keep unsigned for pointer-sized reads via int32
+    if u >= 0x80000000 then return u - 0x100000000 end
+    return u
+  end
   if vtype == "int64"  then return readQword(addr) end
   if vtype == "float"  then return readFloat(addr) end
   if vtype == "double" then return readDouble(addr) end
   if vtype == "string" then return readString(addr, 256, false) end
   if vtype == "wstring" then return readString(addr, 256, true) end
-  return readInteger(addr)
+  return read_u32(addr)
 end
 
 local function write_value(addr, value, vtype)
@@ -250,8 +280,16 @@ end
 
 handlers.read_memory = function(p)
   local addr = parse_addr(p.address); if not addr then return nil, "bad address" end
-  local val = read_value(addr, p.type or "int32")
-  return { address = string.format("%X", addr), type = p.type or "int32", value = val }
+  local vtype = p.type or "int32"
+  local ok, val = pcall(read_value, addr, vtype)
+  if not ok then
+    return nil, "read failed: " .. tostring(val)
+  end
+  if val == nil then
+    return nil, string.format(
+      "read returned nil at %X (process attached? readable?)", addr)
+  end
+  return { address = string.format("%X", addr), type = vtype, value = val }
 end
 
 handlers.write_memory = function(p)
