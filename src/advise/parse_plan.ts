@@ -38,6 +38,8 @@ export function parseAdvisePlan(reply: string): AdvisePlan {
 }
 
 export type AdviseStepKind =
+    | "scan"
+    | "reset_scan"
     | "scan_results"
     | "disassemble"
     | "monitor_writes"
@@ -49,6 +51,8 @@ export type AdviseStepKind =
 export function classifyAdviseStep(cmd: string): AdviseStepKind {
     const c = cmd.trim();
     if (/^scan_results(?:\s+\d+)?$/i.test(c)) return "scan_results";
+    if (/^scan(\s|$)/i.test(c)) return "scan";
+    if (/^reset_scan$/i.test(c)) return "reset_scan";
     if (/^disassemble(\s|$)/i.test(c)) return "disassemble";
     if (/^monitor_writes(\s|$)/i.test(c) || c === "show_write_locations") {
         return "monitor_writes";
@@ -56,7 +60,7 @@ export function classifyAdviseStep(cmd: string): AdviseStepKind {
     if (/^resolve_base(\s|$)/i.test(c)) return "resolve_base";
     if (c === "list_bases" || c === "show_base_addresses") return "list_bases";
     if (
-        /^(scan|reset_scan|poc_patch|poc_patch_base|save_base_address|advise|help|quit|exit)(\s|$)/i.test(
+        /^(poc_patch|poc_patch_base|save_base_address|advise|help|quit|exit)(\s|$)/i.test(
             c,
         )
     ) {

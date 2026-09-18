@@ -576,8 +576,8 @@ function printHelp(): void {
                                   example: save_base_address 0x989B48 double 0,0,0x14,0x100 ammo
                                   example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158
   advise [question]               Cursor CLI coach from session history (proposal only)
-  advise --run [question]         propose + auto-run; loops after scan_results / dumps
-  advise_run                      execute last plan then loop on gather dumps (Enter before monitor)
+  advise --run [question]         propose + auto-run; loops after scan / monitor / dumps
+  advise_run                      execute last plan then loop on gather dumps (Enter before scan/monitor)
   help                            show this help
   quit | exit | cancel            exit REPL
 
@@ -880,6 +880,50 @@ async function pocTraceBaseAddress(
         for (const line of lines) sessionLog.print(line);
     };
 
+    const runResetScan = async (): Promise<void> => {
+        await callTool(mcp, CeTool.ScanReset, {});
+        hasScanned = false;
+        lastScanType = undefined;
+        sessionLog.print(
+            "Scan state reset; next scan <type> <value> will call ce_scan_first",
+        );
+    };
+
+    const runScanCmd = async (cmd: string): Promise<void> => {
+        const parsed = parseScanCommand(cmd);
+        if (!parsed || "error" in parsed) {
+            throw new Error(parsed?.error ?? "Usage: scan <type> <value>");
+        }
+        if (!hasScanned || (lastScanType !== undefined && parsed.type !== lastScanType)) {
+            if (hasScanned && lastScanType !== undefined && parsed.type !== lastScanType) {
+                sessionLog.print(
+                    `Scan type changed (${lastScanType} → ${parsed.type}); starting new ce_scan_first`,
+                );
+                await callTool(mcp, CeTool.ScanReset, {});
+                hasScanned = false;
+                lastScanType = undefined;
+            }
+            const first = await callTool(mcp, CeTool.ScanFirst, {
+                value: parsed.value,
+                type: parsed.type,
+                scanOption: "exact",
+                hex: parsed.hex,
+            });
+            hasScanned = true;
+            lastScanType = parsed.type;
+            sessionLog.print(`ce_scan_first type=${parsed.type}: count=${first.count}`);
+        } else {
+            // ce_scan_next has no `type` — vartype is locked by the prior first scan
+            const next = await callTool(mcp, CeTool.ScanNext, {
+                value: parsed.value,
+                scanOption: "exact",
+                hex: parsed.hex,
+            });
+            sessionLog.print(`ce_scan_next: count=${next.count}`);
+        }
+        await runScanResults(5);
+    };
+
     const runDisassemble = async (rawAddr: string, ctx: number): Promise<void> => {
         if (!Number.isInteger(ctx) || ctx < 0 || ctx > 100) {
             throw new Error("Usage: disassemble <loc|hex> [ctx=0..100]");
@@ -976,6 +1020,8 @@ async function pocTraceBaseAddress(
     };
 
     const adviseRunners = (): AdviseRunners => ({
+        scan: runScanCmd,
+        resetScan: runResetScan,
         scanResults: runScanResults,
         disassemble: runDisassemble,
         monitorWrites: runMonitorWritesCmd,
@@ -994,6 +1040,7 @@ async function pocTraceBaseAddress(
         let loops = 0;
         let reusePlan = opts.reusePlan === true;
         let question = opts.question;
+        let execute = opts.execute;
 
         while (true) {
             loops++;
@@ -1011,7 +1058,7 @@ async function pocTraceBaseAddress(
                     watched,
                     lastScanType,
                     basesJson: JSON.stringify(bases, null, 2),
-                    executionMode: opts.execute ? "execute_allowlist" : "propose_only",
+                    executionMode: execute ? "execute_allowlist" : "propose_only",
                     question,
                 });
                 sessionLog.note(
@@ -1050,12 +1097,36 @@ async function pocTraceBaseAddress(
                 sessionLog.note(`advise_run reusing last plan (loop ${loops})`);
             }
 
-            if (!opts.execute || !plan) return;
+            if (!plan) return;
 
             const autoSteps = plan.steps.filter((s) => {
                 const k = classifyAdviseStep(s);
                 return k !== "suggest_only" && k !== "unknown";
             });
+
+            if (!execute) {
+                if (autoSteps.length === 0) {
+                    await executeAdvisePlan(plan, adviseRunners());
+                    sessionLog.print(
+                        "(no allowlisted steps to auto-run — use advise_run after editing, or run suggestions manually)",
+                    );
+                    break;
+                }
+                sessionLog.print(
+                    `\nRun ${autoSteps.length} allowlisted command(s)? [Y/n]\n` +
+                        autoSteps.map((s) => `  ${s}`).join("\n"),
+                );
+                const ans = (await askUser("")).trim().toLowerCase();
+                sessionLog.gate(`execute plan confirm: ${ans || "Y"}`);
+                if (ans === "n" || ans === "no") {
+                    sessionLog.print(
+                        "(skipped — `advise_run` reuses this plan, or `advise --run` next time)",
+                    );
+                    break;
+                }
+                execute = true;
+            }
+
             if (autoSteps.length === 0) {
                 // Print manual suggestions once, then exit the loop.
                 await executeAdvisePlan(plan, adviseRunners());
@@ -1073,7 +1144,7 @@ async function pocTraceBaseAddress(
                 );
                 question =
                     question ??
-                    "Continue from the latest tool output in the transcript. Pick the next gather or propose manual scan/save steps.";
+                    "Continue from the latest tool output in the transcript. Pick the next gather (scan / monitor_writes / disassemble) or propose manual save/patch steps.";
                 reusePlan = false;
                 continue;
             }
@@ -1146,12 +1217,11 @@ async function pocTraceBaseAddress(
             }
 
             if (cmd === "reset_scan") {
-                await callTool(mcp, CeTool.ScanReset, {});
-                hasScanned = false;
-                lastScanType = undefined;
-                sessionLog.print(
-                    "Scan state reset; next scan <type> <value> will call ce_scan_first",
-                );
+                try {
+                    await runResetScan();
+                } catch (err) {
+                    sessionLog.printErr(err instanceof Error ? err.message : String(err));
+                }
                 continue;
             }
 
@@ -1170,39 +1240,10 @@ async function pocTraceBaseAddress(
 
             // scan <type> <value> → first scan or next-scan filter
             if (cmd === "scan" || /^scan\s/i.test(cmd)) {
-                const parsed = parseScanCommand(cmd);
-                if (!parsed || "error" in parsed) {
-                    console.error(parsed?.error ?? "Usage: scan <type> <value>");
-                    continue;
-                }
-                if (!hasScanned || (lastScanType !== undefined && parsed.type !== lastScanType)) {
-                    if (hasScanned && lastScanType !== undefined && parsed.type !== lastScanType) {
-                        console.log(
-                            `Scan type changed (${lastScanType} → ${parsed.type}); starting new ce_scan_first`,
-                        );
-                        await callTool(mcp, CeTool.ScanReset, {});
-                        hasScanned = false;
-                        lastScanType = undefined;
-                    }
-                    const first = await callTool(mcp, CeTool.ScanFirst, {
-                        value: parsed.value,
-                        type: parsed.type,
-                        scanOption: "exact",
-                        hex: parsed.hex,
-                    });
-                    hasScanned = true;
-                    lastScanType = parsed.type;
-                    console.log(`ce_scan_first type=${parsed.type}: count=${first.count}`);
-                    sessionLog.out(`ce_scan_first type=${parsed.type}: count=${first.count}`);
-                } else {
-                    // ce_scan_next has no `type` — vartype is locked by the prior first scan
-                    const next = await callTool(mcp, CeTool.ScanNext, {
-                        value: parsed.value,
-                        scanOption: "exact",
-                        hex: parsed.hex,
-                    });
-                    console.log(`ce_scan_next: count=${next.count}`);
-                    sessionLog.out(`ce_scan_next: count=${next.count}`);
+                try {
+                    await runScanCmd(cmd);
+                } catch (err) {
+                    sessionLog.printErr(err instanceof Error ? err.message : String(err));
                 }
                 continue;
             }

@@ -34,6 +34,10 @@ ${question}
 ## Execution mode
 ${state.executionMode}
 
+## Be helpful
+At the end of each step, print out the next commands that should be run. 
+This will guide the user through the debugging process.
+
 ## POC state
 watched: ${state.watched ?? "(none)"}
 lastScanType: ${state.lastScanType ?? "(none)"}

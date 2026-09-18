@@ -2,9 +2,9 @@
  * Execute allowlisted advise plan steps inside the POC.
  * SPEC: specs/SPEC_POC_ADVISE_CURSOR_CLI.md
  *
- * After evidence-producing gather steps (scan_results, list_bases, resolve_base,
- * monitor_writes), returns reAdvise=true so the host re-prompts the agent with
- * the updated transcript instead of executing a stale plan tail.
+ * After evidence-producing gather steps (scan, scan_results, list_bases,
+ * resolve_base, monitor_writes), returns reAdvise=true so the host re-prompts
+ * the agent with the updated transcript instead of executing a stale plan tail.
  */
 
 import { parseDisassembleArgs, parseLeadingAddressSpec } from "../address_spec.ts";
@@ -16,6 +16,9 @@ import {
 import type { SessionLog } from "./session_log.ts";
 
 export type AdviseRunners = {
+    /** Run `scan <type> <value>` (includes auto scan_results dump). */
+    scan: (cmd: string) => Promise<void>;
+    resetScan: () => Promise<void>;
     scanResults: (limit: number) => Promise<void>;
     disassemble: (address: string, ctx: number) => Promise<void>;
     /** Optional durationMs forces the watch window (advise uses 10s). */
@@ -57,10 +60,14 @@ function adviseMonitorDurationMs(): number {
 function shouldReAdviseAfter(kind: AdviseStepKind): boolean {
     if (!envFlag("ADVISE_REAADVISE_AFTER_GATHER", true)) return false;
     switch (kind) {
+        case "scan":
         case "scan_results":
         case "list_bases":
         case "resolve_base":
             return true;
+        case "reset_scan":
+            // Stay in-plan so `reset_scan` + `scan …` can run in one turn.
+            return false;
         case "monitor_writes":
             return envFlag("ADVISE_REAADVISE_AFTER_MONITOR", true);
         default:
@@ -96,6 +103,37 @@ export async function executeAdvisePlan(
 
         try {
             switch (kind) {
+                case "scan": {
+                    log.gate(`ready prompt for: ${step}`);
+                    log.print(
+                        `\nAbout to run:\n  ${step}\n\n` +
+                            `Set the in-game value to match this scan (or leave as-is for pointer scans),\n` +
+                            `then press Enter to run the scan.`,
+                    );
+                    await runners.askUser("");
+                    log.gate("user ready — starting scan");
+                    await runners.scan(step);
+                    ranAuto = true;
+                    evidence.push(kind);
+                    if (shouldReAdviseAfter(kind)) {
+                        log.print(
+                            "(scan finished — re-advising with updated transcript.)",
+                        );
+                        return {
+                            stopped: false,
+                            reAdvise: true,
+                            evidence,
+                            ranAuto,
+                        };
+                    }
+                    break;
+                }
+                case "reset_scan": {
+                    await runners.resetScan();
+                    ranAuto = true;
+                    evidence.push(kind);
+                    break;
+                }
                 case "scan_results": {
                     const m = /^scan_results(?:\s+(\d+))?$/i.exec(step);
                     const limit = m?.[1] !== undefined ? Number(m[1]) : 50;
