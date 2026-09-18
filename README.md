@@ -1,7 +1,7 @@
 # skid_factory
 A tool to automate video game reverse engineering and cheat client development using LLMs and MCP. Proof is provided using the "Not a Hero" single player, DRM free game. 
 
-After finding the value that writes to a pointer of our health/ammo values, use the `advise` command to have Cursor automate the entire pointer traversal and memory patching efforts. 
+After finding the the leaf pointer of our health/ammo values, use the `advise` command to have Cursor automate the entire memory writing process, pointer traversal and memory patching efforts. 
 
 In the future, this program will generate a DLL that provides keybindings to restore health to 100%, as a proof of concept. 
 
@@ -150,3 +150,7 @@ advise_run
     - [ ] choose a new address from the "what wrote to this address" screen to follow. Following means showing ASM, C, and setting a "monitor writes" breakpoint.
     - [ ] GUI for showing all "monitor write" results like Cheat Engine does.
     - [ ] key bindings to navigate the list to follow new entires. Or use clickable buttons
+
+## JailBreaking
+It was not necessary to jailbreak anything in this project. However, `src\advise\build_prompt.ts` contained a prompt that discussed the circular nature of this harness. Including that string triggered the guardrails of this model, so it is interesting that letting the harness know it is in a loop is against the rules.
+
