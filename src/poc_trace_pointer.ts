@@ -1020,9 +1020,14 @@ async function pocTraceBaseAddress(
                 sessionLog.print(
                     `Calling Cursor CLI (agent -p --mode ask)… [loop ${loops}/${maxLoops}]`,
                 );
+                const agentWaitStarted = Date.now();
                 const reply = await runCursorOneShot(prompt, {
                     cwd: process.cwd(),
                 });
+                const agentWaitMs = Date.now() - agentWaitStarted;
+                sessionLog.print(
+                    `Agent completed in ${(agentWaitMs / 1000).toFixed(1)}s (waited ${agentWaitMs}ms)`,
+                );
                 sessionLog.print(
                     "\n--- advise reply ---\n" + reply + "\n--- end advise ---",
                 );
