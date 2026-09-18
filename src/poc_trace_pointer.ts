@@ -145,6 +145,15 @@ function parseScanValue(
         return { value: hexMatch[1]!, hex: true };
     }
 
+    // Bare hex from CE dumps (e.g. 1BE4A908 / 0C505870) — same heuristic as monitor addresses.
+    if (
+        INTEGER_SCAN_TYPES.has(type) &&
+        /^[0-9A-Fa-f]+$/i.test(trimmed) &&
+        (/[A-Fa-f]/.test(trimmed) || trimmed.length >= 8)
+    ) {
+        return { value: trimmed, hex: true };
+    }
+
     if (INTEGER_SCAN_TYPES.has(type)) {
         if (!/^-?\d+$/.test(trimmed)) {
             throw new Error(`Expected integer value for type ${type}, got ${JSON.stringify(trimmed)}`);
@@ -202,17 +211,135 @@ function printHelp(): void {
     console.log(`Commands:
   scan <type> <value>             ce_scan_first (or next filter after first scan)
                                   types: ${CE_SCAN_TYPES.join(", ")}
+                                  integers: decimal, 0xHEX, or bare hex (1BE4A908)
   scan_results [limit=50]         ce_scan_results — list addresses from current scan
   reset_scan                      ce_scan_reset + clear local scan state
   monitor_writes <addr> [type|size] [ms]  timed write-watch collect via ce_eval_lua
                                   example: monitor_writes 0C505970 double 5000
                                   default type: last scan type (else int32), ms=3000
   show_write_locations            same as monitor_writes using current watched address
-  disassemble <loc|hex> [count]   disassemble at an instruction RIP / code address
+  disassemble <loc|hex> [ctx=5]   disassemble target with ctx lines above and below
                                   tip: use a rip from monitor_writes, not the data address
   save_base_address <loc|hex> <note...>  append to base_addresses.json and exit
   help                            show this help
   quit | exit | cancel            exit without saving`);
+}
+
+type DisassembleInstruction = {
+    address?: string;
+    bytes?: string;
+    opcode?: string;
+    comment?: string;
+    raw?: string;
+    absolute?: string;
+    target?: boolean;
+};
+
+/** Normalize CE address strings to comparable hex (no 0x / leading zeros). */
+function normalizeHexAddr(raw: string | undefined): string | null {
+    if (!raw) return null;
+    const t = raw.trim();
+    if (!t) return null;
+    const plus = /\+([0-9a-fA-F]+)\s*$/i.exec(t);
+    if (plus) {
+        return (plus[1]!.replace(/^0+/i, "") || "0").toUpperCase();
+    }
+    const plain = /^(?:0x)?([0-9a-fA-F]+)$/i.exec(t);
+    if (plain) {
+        return (plain[1]!.replace(/^0+/i, "") || "0").toUpperCase();
+    }
+    const trailing = /([0-9a-fA-F]{4,})\s*$/i.exec(t);
+    if (trailing) {
+        return (trailing[1]!.replace(/^0+/i, "") || "0").toUpperCase();
+    }
+    return null;
+}
+
+function extractDisassembleTargetHex(result: unknown): string | null {
+    if (result === null || typeof result !== "object" || Array.isArray(result)) {
+        return null;
+    }
+    const obj = result as { target?: unknown };
+    if (typeof obj.target === "string" || typeof obj.target === "number") {
+        return normalizeHexAddr(String(obj.target));
+    }
+    return null;
+}
+
+function isTargetInstruction(
+    ins: DisassembleInstruction,
+    targetHex: string | null,
+): boolean {
+    if (ins.target === true) return true;
+    if (!targetHex) return false;
+    for (const field of [ins.absolute, ins.address, ins.comment]) {
+        const got = normalizeHexAddr(field);
+        if (got !== null && got === targetHex) return true;
+    }
+    return false;
+}
+
+/** Print ce_disassemble results as aligned address / bytes / opcode lines. */
+function printDisassembly(result: unknown): void {
+    const instructions = extractDisassembleInstructions(result);
+    if (instructions.length === 0) {
+        console.log("(no instructions)");
+        return;
+    }
+
+    const targetHex = extractDisassembleTargetHex(result);
+    const rows = instructions.map((ins) => ({
+        address: String(ins.address ?? "").trim(),
+        bytes: String(ins.bytes ?? "").trim(),
+        opcode: String(ins.opcode ?? "").trim(),
+        target: isTargetInstruction(ins, targetHex),
+    }));
+
+    const addrWidth = Math.max(8, ...rows.map((r) => r.address.length));
+    const bytesWidth = Math.max(8, ...rows.map((r) => r.bytes.length));
+
+    for (const row of rows) {
+        const mark = row.target ? "  <-- target address" : "";
+        console.log(
+            `${row.address.padEnd(addrWidth)}  ${row.bytes.padEnd(bytesWidth)}  ${row.opcode}${mark}`,
+        );
+    }
+}
+
+/** Print monitor_writes dump: JSON without nested disasm, then formatted disasm per RIP. */
+function printWriteDump(dump: WriteDump): void {
+    const writesWithoutDisasm = dump.writes.map(({ disasm: _disasm, ...rest }) => rest);
+    console.log(
+        JSON.stringify(
+            {
+                watched_address: dump.watched_address,
+                type: dump.type,
+                size: dump.size,
+                writes: writesWithoutDisasm,
+            },
+            null,
+            2,
+        ),
+    );
+
+    for (const hit of dump.writes) {
+        if (!hit.disasm || hit.disasm.length === 0) continue;
+        console.log(`\n--- disasm ${hit.location} (rip=${hit.rip}, count=${hit.count}) ---`);
+        printDisassembly({ instructions: hit.disasm });
+    }
+}
+
+function extractDisassembleInstructions(result: unknown): DisassembleInstruction[] {
+    if (Array.isArray(result)) {
+        return result as DisassembleInstruction[];
+    }
+    if (result !== null && typeof result === "object") {
+        const obj = result as { instructions?: unknown };
+        if (Array.isArray(obj.instructions)) {
+            return obj.instructions as DisassembleInstruction[];
+        }
+    }
+    return [];
 }
 
 /**
@@ -373,10 +500,12 @@ async function pocTraceBaseAddress(
                     continue;
                 }
                 const dump = await callTool(mcp, CeTool.ScanResults, { limit });
+                const hits = dump.results;
                 console.log(
-                    `Scan results: total=${dump.total} returned=${dump.returned}`,
+                    `Scan results: total=${dump.total} returned=${hits.length}`,
                 );
-                for (const hit of dump.results) {
+                console.log("  Address = Value");
+                for (const hit of hits) {
                     console.log(`  ${hit.address}  =  ${hit.value}`);
                 }
                 continue;
@@ -471,7 +600,7 @@ async function pocTraceBaseAddress(
                     `Monitoring writes to ${monitorArgs.address} (type=${monitorArgs.type}, size=${monitorArgs.size}, ${monitorArgs.durationMs}ms)...`,
                 );
                 const dump: WriteDump = await monitorWrites(mcp, monitorArgs);
-                console.log(JSON.stringify(dump, null, 2));
+                printWriteDump(dump);
 
                 // FIXME: optional — ask Codex which writer to follow next
                 // const suggestion = await askCodex(`Pick one follow_address from:\n${JSON.stringify(dump)}`);
@@ -506,22 +635,24 @@ async function pocTraceBaseAddress(
                 const parts = rest === "" ? [] : rest.split(/\s+/);
                 const rawAddr = parts[0];
                 if (!rawAddr) {
-                    console.error("Usage: disassemble <loc|hex> [count=15]");
-                    console.error("  example: disassemble game.exe+1234");
-                    console.error("           disassemble 0x7FF612341234 20");
+                    console.error("Usage: disassemble <loc|hex> [ctx=5]");
+                    console.error("  shows ctx instructions above and below the target");
+                    console.error("  example: disassemble 0x7BFA4D");
+                    console.error("           disassemble 0x7BFA4D 8");
                     continue;
                 }
-                const count = parts[1] !== undefined ? Number(parts[1]) : 15;
-                if (!Number.isInteger(count) || count < 1 || count > 200) {
-                    console.error("Usage: disassemble <loc|hex> [count=1..200]");
+                const ctx = parts[1] !== undefined ? Number(parts[1]) : 5;
+                if (!Number.isInteger(ctx) || ctx < 0 || ctx > 100) {
+                    console.error("Usage: disassemble <loc|hex> [ctx=0..100]");
                     continue;
                 }
                 const address = normalizeAddressSpec(rawAddr);
                 const disassemble = await callTool(mcp, CeTool.Disassemble, {
                     address,
-                    count,
+                    before: ctx,
+                    after: ctx,
                 });
-                console.log(disassemble);
+                printDisassembly(disassemble);
                 continue;
             }
 

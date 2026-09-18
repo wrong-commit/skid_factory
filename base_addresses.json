@@ -1,0 +1,12 @@
+[
+  {
+    "base": "0x989B48",
+    "note": "ammo double: [[[base]]+0x14]+0x100  (NOT A HERO.exe+3C9B48)",
+    "savedAt": "2026-09-18T00:15:23.621Z"
+  },
+  {
+    "base": "0x9B91A8",
+    "note": "ammo double 2: [[[base]]+0x14]+0x100  (NOT A HERO.exe+3F91A8)",
+    "savedAt": "2026-09-18T00:15:48.437Z"
+  }
+]

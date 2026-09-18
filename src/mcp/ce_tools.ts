@@ -166,11 +166,33 @@ export const CeScanResetResultSchema = z.object({
     ok: z.boolean().default(true),
 });
 
+/** Hex strings for GPRs / flags snapped on first hit for this RIP. */
+export const WriteHitRegsSchema = z.record(z.string(), z.string());
+
+/**
+ * Fixed memory derefs snapped on first hit (no opcode parsing yet).
+ * Typical keys: `[ecx]`, `[ecx+4]`, `[eax+0x100]`.
+ */
+export const WriteHitDerefsSchema = z.record(z.string(), z.string());
+
+/** ±ctx instructions around the hit RIP (same shape as bridge `ce_disassemble`). */
+export const WriteHitDisasmInstructionSchema = z.object({
+    address: z.string(),
+    bytes: z.string().optional().default(""),
+    opcode: z.string().optional().default(""),
+    comment: z.string().optional().default(""),
+    raw: z.string().optional().default(""),
+    target: z.boolean().optional(),
+});
+
 export const WriteHitSchema = z.object({
     rip: z.string(),
     ripRaw: z.string(),
     location: z.string(),
     count: z.number().int().nonnegative(),
+    regs: WriteHitRegsSchema.optional().default({}),
+    derefs: WriteHitDerefsSchema.optional().default({}),
+    disasm: z.array(WriteHitDisasmInstructionSchema).optional().default([]),
 });
 
 export const WriteDumpSchema = z.object({
@@ -243,7 +265,9 @@ export const ceToolCatalog = {
     [CeTool.Disassemble]: {
         args: z.object({
             address: z.union([z.string(), z.number()]),
-            count: z.number().int().min(1).max(200).optional().default(15),
+            count: z.number().int().min(1).max(200).optional(),
+            before: z.number().int().min(0).max(100).optional(),
+            after: z.number().int().min(0).max(100).optional(),
         }),
         result: DisassembleResultSchema,
     },

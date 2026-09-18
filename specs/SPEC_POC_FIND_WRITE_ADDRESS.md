@@ -52,6 +52,9 @@ One hardware write watch at a time. Collect many hits, **dedupe by RIP**, return
 | `writes[].rip` | **Instruction** address (`RIP`) that performed the write |
 | `writes[].location` | Symbolic form from `getNameFromAddress` (e.g. `game.exe+1234`) |
 | `writes[].count` | How many times that RIP hit during the window |
+| `writes[].regs` | All available GPRs/flags as hex (first hit for this RIP) |
+| `writes[].derefs` | Fixed `[ecx]` / `[ecx+4]` / `[eax+0x100]` reads (first hit) |
+| `writes[].disasm` | ±5 instructions around the hit RIP (`target: true` on the RIP line) |
 
 ## Files
 
@@ -84,8 +87,25 @@ Returned JSON must match `WriteDumpSchema`:
 ```json
 {
   "watched_address": "0x000001F812345678",
+  "type": "double",
+  "size": 8,
   "writes": [
-    { "rip": "0x00007FF612341234", "location": "game.exe+1234", "count": 1832 }
+    {
+      "rip": "0x00007FF612341234",
+      "ripRaw": "1407001234567892",
+      "location": "game.exe+1234",
+      "count": 1832,
+      "regs": { "EAX": "0x...", "ECX": "0x...", "EIP": "0x..." },
+      "derefs": {
+        "[ecx]": "0x...",
+        "[ecx+4]": "0x...",
+        "[eax+0x100]": "0x..."
+      },
+      "disasm": [
+        { "address": "...", "bytes": "...", "opcode": "movsd [eax+100],xmm0", "target": false },
+        { "address": "...", "bytes": "...", "opcode": "add eax,08", "target": true }
+      ]
+    }
   ]
 }
 ```
@@ -139,3 +159,15 @@ CE already implements write watchpoints via debug registers / other backends. Th
 - Multi-address watch queue / soft breakpoints when DR slots are exhausted.
 - Streaming partial hits before `durationMs` ends.
 - Auto-following the hottest RIP into the next `monitor_writes` (LLM loop).
+
+## Hit payload: regs + fixed derefs + disasm
+
+On the **first** hit per RIP, Lua snapshots regs/derefs. After the watch window ends, it disassembles ±5 instructions around each unique RIP:
+
+| Field | Contents |
+| --- | --- |
+| `regs` | All available CE debugger GPRs/flags (`EAX`…`EIP`, `RAX`…`R15`, `EFLAGS`/`RFLAGS`) as hex strings |
+| `derefs` | Fixed expressions only: `[ecx]`, `[ecx+4]`, `[eax+0x100]` (uses `EAX`/`ECX`, else `RAX`/`RCX`); values via `readInteger` |
+| `disasm` | Same instruction shape as `ce_disassemble`; `target: true` marks the reported RIP (often post-store) |
+
+Opcode-driven “which regs/derefs matter” is **out of scope**. See TODO in `src/lua/monitor_writes.lua` for a brief SPEC sketch (parse ModR/M / CE disasm, emit `used_regs` + operand `derefs` only).

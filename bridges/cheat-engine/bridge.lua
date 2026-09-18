@@ -276,10 +276,38 @@ end
 
 handlers.disassemble = function(p)
   local addr = parse_addr(p.address); if not addr then return nil, "bad address" end
-  local count = tonumber(p.count) or 10
+  -- before/after = instructions above/below the target (default 0/count for old callers)
+  local before = tonumber(p.before) or 0
+  local after = tonumber(p.after)
+  local count = tonumber(p.count)
+  if after == nil then
+    if count ~= nil then
+      after = math.max(0, count - 1)
+    else
+      after = 10
+    end
+  end
+  if before < 0 then before = 0 end
+  if after < 0 then after = 0 end
+
+  local function prevInstruction(a)
+    if not getPreviousOpcode then return nil end
+    local prev = getPreviousOpcode(a)
+    if prev == nil or prev == 0 or prev >= a then return nil end
+    return prev
+  end
+
+  local start = addr
+  for _ = 1, before do
+    local prev = prevInstruction(start)
+    if not prev then break end
+    start = prev
+  end
+
   local out = {}
-  local cur = addr
-  for i = 1, count do
+  local cur = start
+  local total = before + 1 + after
+  for _ = 1, total do
     local d = disassemble(cur)
     -- Returns: address (often symbolic or empty), opcode, bytes, extra (often hex address)
     local addr_s, op_s, bytes_s, extra_s
@@ -297,12 +325,15 @@ handlers.disassemble = function(p)
       opcode = op_s or "",
       comment = extra_s or "",
       raw = d,
+      absolute = numeric,
+      -- always true/false (never nil) so JSON keeps the field for the REPL marker
+      target = (cur == addr) and true or false,
     }
     local size = getInstructionSize and getInstructionSize(cur) or 1
     if not size or size <= 0 then break end
     cur = cur + size
   end
-  return { instructions = out }
+  return { instructions = out, target = string.format("%X", addr) }
 end
 
 ------------------------------------------------------------
@@ -470,14 +501,20 @@ handlers.scan_results = function(p)
       pcall(function() SCAN._fl.deinitialize() end)
     end
     SCAN._fl.initialize()
-    total = SCAN._fl.Count
+    total = tonumber(SCAN._fl.Count) or 0
     n = math.min(tonumber(p.limit) or 50, total)
-    for i = 0, n - 1 do
-      results[#results+1] = { address = SCAN._fl.Address[i], value = SCAN._fl.Value[i] }
+    -- 0-based CE FoundList uses 0..n-1; some Lua bindings are 1-based (1..n).
+    -- Walk both, skip empty slots, stop once we have `n` hits.
+    for i = 0, n do
+      if #results >= n then break end
+      local addr = SCAN._fl.Address[i]
+      if addr ~= nil and addr ~= "" then
+        results[#results+1] = { address = tostring(addr), value = SCAN._fl.Value[i] }
+      end
     end
     SCAN._fl.deinitialize()
   end)
-  return { total = total, returned = n, results = results }
+  return { total = total, returned = #results, results = results }
 end
 
 handlers.scan_reset = function(p)

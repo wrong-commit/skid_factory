@@ -7,6 +7,29 @@
     debug_continueFromBreakpoint(co_run)
     return 1   -- we handled it; do NOT update debugger UI
   return 0 means "break into the UI" and freezes the game for the user.
+
+  On each unique RIP's first hit we also snapshot all GPRs + a few fixed
+  derefs (see snapshotRegs / snapshotDerefs). Opcode-driven deref inference
+  is intentionally out of scope — see TODO below.
+]]
+
+--[[
+  TODO — SPEC: opcode-driven register/deref inference (future)
+
+  Goal: on write-BP hit, parse the faulting instruction's operands and only
+  dump the registers / memory expressions that the store actually uses
+  (e.g. `movsd [eax+0x100], xmm0` → eax, [eax+0x100], xmm0).
+
+  Sketch:
+    1. Prefer CE `disassemble(RIP)` / `splitDisassembledString` (or get the
+       previous instruction when RIP is post-store).
+    2. Parse ModR/M / displacement from the opcode bytes (not the text) for
+       base, index, scale, disp — fall back to text parse only if needed.
+    3. Emit `used_regs: string[]` and `derefs: { expr: hexValue }` limited to
+       those operands; keep full `regs` optional behind a flag.
+    4. Handle 32/64-bit and common SSE/AVX stores (movsd/movss/movdqu).
+
+  Non-goals for that work: full symbolic execution, stack unwinding.
 ]]
 
 local function jsonEscape(s)
@@ -48,6 +71,158 @@ local function clearAllBreakpoints()
   end
   forceContinue()
   return n
+end
+
+-- All CE debugger register globals we care about (32 + 64 bit).
+local REG_NAMES = {
+  "EAX", "EBX", "ECX", "EDX", "ESI", "EDI", "EBP", "ESP", "EIP",
+  "RAX", "RBX", "RCX", "RDX", "RSI", "RDI", "RBP", "RSP", "RIP",
+  "R8", "R9", "R10", "R11", "R12", "R13", "R14", "R15",
+  "EFLAGS", "RFLAGS",
+}
+
+local function snapshotRegs()
+  local regs = {}
+  for i = 1, #REG_NAMES do
+    local name = REG_NAMES[i]
+    local v = _G[name]
+    if type(v) == "number" then
+      regs[name] = hexAddress(v)
+    end
+  end
+  return regs
+end
+
+local function readU32(addr)
+  if addr == nil or type(addr) ~= "number" then return nil end
+  local ok, v = pcall(function()
+    if type(readInteger) == "function" then
+      return readInteger(addr)
+    end
+    return nil
+  end)
+  if ok and type(v) == "number" then
+    return hexAddress(v)
+  end
+  return nil
+end
+
+-- Fixed deref set for pointer-chain tracing (no opcode parsing).
+-- Prefer 32-bit names; fall back to 64-bit equivalents when EAX/ECX absent.
+local function snapshotDerefs()
+  local eax = EAX
+  if type(eax) ~= "number" then eax = RAX end
+  local ecx = ECX
+  if type(ecx) ~= "number" then ecx = RCX end
+
+  local derefs = {}
+  if type(ecx) == "number" then
+    local v0 = readU32(ecx)
+    if v0 ~= nil then derefs["[ecx]"] = v0 end
+    local v4 = readU32(ecx + 4)
+    if v4 ~= nil then derefs["[ecx+4]"] = v4 end
+  end
+  if type(eax) == "number" then
+    local v100 = readU32(eax + 0x100)
+    if v100 ~= nil then derefs["[eax+0x100]"] = v100 end
+  end
+  return derefs
+end
+
+local function jsonObject(map)
+  local keys = {}
+  for k in pairs(map) do
+    keys[#keys + 1] = k
+  end
+  table.sort(keys)
+  local parts = {}
+  for i = 1, #keys do
+    local k = keys[i]
+    local v = map[k]
+    if v == nil then
+      parts[#parts + 1] = string.format('"%s":null', jsonEscape(k))
+    else
+      parts[#parts + 1] = string.format('"%s":"%s"', jsonEscape(k), jsonEscape(v))
+    end
+  end
+  return "{" .. table.concat(parts, ",") .. "}"
+end
+
+-- ±ctx around RIP (matches REPL `disassemble` default). Done after the watch
+-- window so we do not disassemble under the BP callback.
+local DISASM_CTX = 5
+
+local function prevInstruction(a)
+  if type(getPreviousOpcode) ~= "function" then return nil end
+  local prev = getPreviousOpcode(a)
+  if prev == nil or prev == 0 or prev >= a then return nil end
+  return prev
+end
+
+local function disassembleAround(rip, before, after)
+  before = before or DISASM_CTX
+  after = after or DISASM_CTX
+  if type(disassemble) ~= "function" then return {} end
+
+  local start = rip
+  for _ = 1, before do
+    local prev = prevInstruction(start)
+    if not prev then break end
+    start = prev
+  end
+
+  local out = {}
+  local cur = start
+  local total = before + 1 + after
+  for _ = 1, total do
+    local ok, d = pcall(disassemble, cur)
+    if not ok or d == nil then break end
+
+    local addr_s, op_s, bytes_s, extra_s
+    if type(splitDisassembledString) == "function" then
+      addr_s, op_s, bytes_s, extra_s = splitDisassembledString(d)
+    end
+    local numeric = string.format("%X", cur)
+    local resolved = addr_s
+    if resolved == nil or resolved == "" then
+      resolved = (extra_s ~= nil and extra_s ~= "" and extra_s) or numeric
+    end
+
+    out[#out + 1] = {
+      address = tostring(resolved or ""),
+      bytes = tostring(bytes_s or ""),
+      opcode = tostring(op_s or ""),
+      comment = tostring(extra_s or ""),
+      raw = tostring(d),
+      target = (cur == rip),
+    }
+
+    local size = 1
+    if type(getInstructionSize) == "function" then
+      local sok, sz = pcall(getInstructionSize, cur)
+      if sok and type(sz) == "number" and sz > 0 then size = sz end
+    end
+    cur = cur + size
+  end
+  return out
+end
+
+local function jsonDisasm(instructions)
+  local parts = {}
+  for i = 1, #instructions do
+    local ins = instructions[i]
+    local targetJson = ins.target and "true" or "false"
+    parts[#parts + 1] = string.format(
+      '{"address":"%s","bytes":"%s","opcode":"%s","comment":"%s","raw":"%s","target":%s}',
+      jsonEscape(ins.address),
+      jsonEscape(ins.bytes),
+      jsonEscape(ins.opcode),
+      jsonEscape(ins.comment),
+      jsonEscape(ins.raw),
+      targetJson
+    )
+  end
+  return "[" .. table.concat(parts, ",") .. "]"
 end
 
 local SIZE_FROM_TYPE = {
@@ -99,7 +274,11 @@ function monitorWrites(address, size, durationMs, vtype)
       end
       local entry = hits[rip]
       if entry == nil then
-        hits[rip] = { count = 1 }
+        hits[rip] = {
+          count = 1,
+          regs = snapshotRegs(),
+          derefs = snapshotDerefs(),
+        }
       else
         entry.count = entry.count + 1
       end
@@ -135,11 +314,15 @@ function monitorWrites(address, size, durationMs, vtype)
     if location == nil or location == "" then
       location = hexAddress(rip)
     end
+    local disasmOk, disasm = pcall(disassembleAround, rip, DISASM_CTX, DISASM_CTX)
     writes[#writes + 1] = {
       rip = hexAddress(rip),
       ripRaw = tostring(rip),
       location = location,
       count = entry.count,
+      regs = entry.regs or {},
+      derefs = entry.derefs or {},
+      disasm = (disasmOk and disasm) or {},
     }
   end
 
@@ -149,6 +332,9 @@ function monitorWrites(address, size, durationMs, vtype)
       ripRaw = "unknown",
       location = "unknown",
       count = unknownCount,
+      regs = {},
+      derefs = {},
+      disasm = {},
     }
   end
 
@@ -163,11 +349,14 @@ function monitorWrites(address, size, durationMs, vtype)
   for i = 1, #writes do
     local w = writes[i]
     parts[#parts + 1] = string.format(
-      '{"rip":"%s","ripRaw":"%s","location":"%s","count":%d}',
+      '{"rip":"%s","ripRaw":"%s","location":"%s","count":%d,"regs":%s,"derefs":%s,"disasm":%s}',
       w.rip,
       jsonEscape(w.ripRaw),
       jsonEscape(w.location),
-      w.count
+      w.count,
+      jsonObject(w.regs),
+      jsonObject(w.derefs),
+      jsonDisasm(w.disasm)
     )
   end
 
