@@ -60,7 +60,7 @@ export function classifyAdviseStep(cmd: string): AdviseStepKind {
     if (/^resolve_base(\s|$)/i.test(c)) return "resolve_base";
     if (c === "list_bases" || c === "show_base_addresses") return "list_bases";
     if (
-        /^(poc_patch|poc_patch_base|save_base_address|advise|help|quit|exit)(\s|$)/i.test(
+        /^(poc_patch|write_base_address|save_base_address|advise|help|quit|exit)(\s|$)/i.test(
             c,
         )
     ) {

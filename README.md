@@ -7,9 +7,9 @@ In the future, this program will generate a DLL that provides keybindings to res
 
 ## Demo
 
-[![Demo: Not a Hero pointer-trace → `poc_patch_base` ammo to 99](demos/example_hacking_thumb.jpg)](demos/example_hacking_thumb.jpg)
+[![Demo: Not a Hero pointer-trace → `write_base_address` ammo to 99](demos/example_hacking_thumb.jpg)](demos/example_hacking_thumb.jpg)
 
-[Watch the demo video](demos/example_hacking.mp4) (~4.5 min) — scan → pointer walk → `save_base_address` → `poc_patch_base`, with Cursor `advise` in the loop. No human interaction other than reducing player ammo when prompted by the agent.
+[Watch the demo video](demos/example_hacking.mp4) (~4.5 min) — scan → pointer walk → `save_base_address` → `write_base_address`, with Cursor `advise` in the loop. No human interaction other than reducing player ammo when prompted by the agent.
 
 ## Why ?
 This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing C I barely understood using Win32 API's I would partially grok to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
@@ -78,7 +78,7 @@ Goal: turn a changing heap value (ammo, HP, …) into a **module-static pointer 
    ```text
    list_bases
    resolve_base 0
-   poc_patch_base 0 99
+   write_base_address 0 99
    ```
 
 ### General recipe (any value)
@@ -90,9 +90,9 @@ Goal: turn a changing heap value (ammo, HP, …) into a **module-static pointer 
 | 3 | Read disasm + regs → expression for the store | (in the dump; optional `disassemble <rip>`) |
 | 4 | Pointer-scan upward; keep survivors after level change | `scan int32 <ptr>`, `reset_scan` as needed |
 | 5 | Stop at a static root; save with type + offsets | `save_base_address <root> <type> <o1,o2,...> <note>` |
-| 6 | Verify + patch leaf only | `resolve_base <idx>`, `poc_patch_base <idx> <value>` |
+| 6 | Verify + patch leaf only | `resolve_base <idx>`, `write_base_address <idx> <value>` |
 
-**Do not** `poc_patch` a saved base address. Use `poc_patch` only on a resolved leaf (e.g. the address `resolve_base` prints), or always prefer `poc_patch_base`.
+**Do not** `poc_patch` a saved base address. Use `poc_patch` only on a resolved leaf (e.g. the address `resolve_base` prints), or always prefer `write_base_address`.
 
 ### Advise (Cursor CLI coach)
 

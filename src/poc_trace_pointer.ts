@@ -562,9 +562,9 @@ function printHelp(): void {
                                   example: disassemble NOT A HERO.exe+1FF50D ctx=5
   poc_patch <addr> <value> [type] write memory at a resolved address (NOT a static base)
                                   example: poc_patch 0C505970 99 double
-  poc_patch_base <idx|addr> <value> [type] follow offsets[] in base_addresses.json, then write
-                                  example: poc_patch_base 0 99
-                                           poc_patch_base 0x989B48 99 double
+  write_base_address <idx|addr> <value> [type] follow offsets[] in base_addresses.json, then write
+                                  example: write_base_address 0 99
+                                           write_base_address 0x989B48 99 double
   resolve_base <idx|addr>         print pointer-chain steps + current value
                                   example: resolve_base 0
   list_bases                      print base_addresses.json
@@ -587,7 +587,7 @@ Typical flow (ammo / any value):
   3. read regs + disasm → pointer chain (e.g. [[[ecx]+14]+100)
   4. scan int32 <ptr> up the chain until a static 00xxxxxx root
   5. save_base_address <root> <type> <offsets> <note>
-     then resolve_base / poc_patch_base (never poc_patch the root)
+     then resolve_base / write_base_address (never poc_patch the root)
   Or: advise --run after a dump for suggested next commands`);
 }
 
@@ -1335,9 +1335,9 @@ async function pocTraceBaseAddress(
                 continue;
             }
 
-            if (cmd === "poc_patch_base" || cmd.startsWith("poc_patch_base ")) {
+            if (cmd === "write_base_address" || cmd.startsWith("write_base_address ")) {
                 const rest =
-                    cmd === "poc_patch_base" ? "" : cmd.slice("poc_patch_base ".length).trim();
+                    cmd === "write_base_address" ? "" : cmd.slice("write_base_address ".length).trim();
                 const leading = parseLeadingAddressSpec(rest);
                 const parts =
                     leading === null
@@ -1348,8 +1348,8 @@ async function pocTraceBaseAddress(
                           ? [leading.address]
                           : [leading.address, ...leading.rest.split(/\s+/).filter(Boolean)];
                 if (parts.length < 2) {
-                    console.error("Usage: poc_patch_base <idx|addr> <value> [type]");
-                    console.error("  example: poc_patch_base 0 99");
+                    console.error("Usage: write_base_address <idx|addr> <value> [type]");
+                    console.error("  example: write_base_address 0 99");
                     continue;
                 }
                 const entries = await loadBaseAddresses();
@@ -1401,7 +1401,7 @@ async function pocTraceBaseAddress(
                     type,
                 });
                 console.log(
-                    `poc_patch_base ok=${written.ok} address=${written.address} type=${type} wrote=${JSON.stringify(value)} read=${JSON.stringify(readBack.value)}`,
+                    `write_base_address ok=${written.ok} address=${written.address} type=${type} wrote=${JSON.stringify(value)} read=${JSON.stringify(readBack.value)}`,
                 );
                 continue;
             }
@@ -1421,7 +1421,7 @@ async function pocTraceBaseAddress(
                     console.error("Usage: poc_patch <addr> <value> [type]");
                     console.error("  example: poc_patch 0C505970 99 double");
                     console.error(
-                        "  To patch via a saved base pointer chain, use: poc_patch_base <idx> <value>",
+                        "  To patch via a saved base pointer chain, use: write_base_address <idx> <value>",
                     );
                     continue;
                 }
@@ -1430,7 +1430,7 @@ async function pocTraceBaseAddress(
                 const matchedBase = findBaseEntry(bases, parts[0]!);
                 if (matchedBase) {
                     console.error(
-                        `Refusing: ${address} is a saved static base (writing it corrupts a pointer). Use: poc_patch_base ${parts[0]} ${parts[1]}${parts[2] ? ` ${parts[2]}` : ""}`,
+                        `Refusing: ${address} is a saved static base (writing it corrupts a pointer). Use: write_base_address ${parts[0]} ${parts[1]}${parts[2] ? ` ${parts[2]}` : ""}`,
                     );
                     continue;
                 }
@@ -1499,7 +1499,7 @@ async function pocTraceBaseAddress(
                 };
                 if (!entry.offsets || !entry.type) {
                     console.error(
-                        "Warning: missing type and/or offsets — poc_patch_base will not work until you add them.\n" +
+                        "Warning: missing type and/or offsets — write_base_address will not work until you add them.\n" +
                             "  Prefer: save_base_address <addr> double 0,0x14,0x100 <note>\n" +
                             "  (leading 0 = deref at base; never omit it for [[base]+off] paths)",
                     );

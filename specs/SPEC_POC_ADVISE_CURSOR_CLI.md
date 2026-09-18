@@ -18,14 +18,14 @@ This replaces ad-hoc copy/paste into chat and the unused `askCodex` stub.
 
 - Giving the Cursor CLI agent live MCP / CE tools (POC already owns CE via MCP; agent is text-in / text-out only).
 - Fully unattended play (no human for actions that change game state).
-- Auto-running destructive or high-impact commands without an explicit allowlist (`poc_patch`, `poc_patch_base`, `save_base_address`, arbitrary `scan` filters — see below).
+- Auto-running destructive or high-impact commands without an explicit allowlist (`poc_patch`, `write_base_address`, `save_base_address`, arbitrary `scan` filters — see below).
 - Guaranteeing correct pointer math (advisor proposes; auto-run still surfaces errors in the log).
 - Streaming REPL takeover that removes readline for normal use.
 - Training / fine-tuning; this is prompt + context packaging + a small plan executor.
 
 ## Motivation
 
-Pointer tracing is a **stateful dialogue**: scan → filter → `monitor_writes` → read regs/disasm → pointer-scan up → save base → `poc_patch_base`. Next steps depend on the **latest dump**. Gathering steps like `scan_results`, `disassemble`, and `monitor_writes` are mechanical once proposed — the bottleneck is often “paste these three lines” plus knowing when to shoot/jump in-game. Auto-run + a confirm gate around `monitor_writes` keeps the human for gameplay and judgment, not for typing.
+Pointer tracing is a **stateful dialogue**: scan → filter → `monitor_writes` → read regs/disasm → pointer-scan up → save base → `write_base_address`. Next steps depend on the **latest dump**. Gathering steps like `scan_results`, `disassemble`, and `monitor_writes` are mechanical once proposed — the bottleneck is often “paste these three lines” plus knowing when to shoot/jump in-game. Auto-run + a confirm gate around `monitor_writes` keeps the human for gameplay and judgment, not for typing.
 
 ## User experience
 
@@ -114,7 +114,7 @@ The Cursor CLI child must **not** attach CE MCP. Execution stays in the Node REP
 | `disassemble <loc\|hex> [ctx]` | **Yes** | None |
 | `monitor_writes …` / `show_write_locations` | **Yes** | **Manual interaction prompt** before start; **continue confirm** after |
 | `scan`, `reset_scan` | No (v1) | Print only — wrong filter is costly; optional v2 with `advise_run --allow-scan` |
-| `poc_patch`, `poc_patch_base`, `save_base_address` | No | Print only — mutating / exiting |
+| `poc_patch`, `write_base_address`, `save_base_address` | No | Print only — mutating / exiting |
 | `resolve_base`, `list_bases`, `help` | Optional yes | Harmless; may auto-run in v1 if present in plan |
 | Unknown / malformed | No | Skip + warn |
 
