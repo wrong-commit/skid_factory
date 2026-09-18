@@ -7,6 +7,10 @@
 import { readFile } from "node:fs/promises";
 import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import {
+    isSymbolicAddressSpec,
+    normalizeAddressSpec,
+} from "../address_spec.ts";
+import {
     CeTool,
     WriteDumpSchema,
     callTool,
@@ -19,7 +23,10 @@ import {
 const MONITOR_WRITES_LUA_URL = new URL("../lua/monitor_writes.lua", import.meta.url);
 
 export type MonitorWritesArgs = {
-    /** Data address to watch (hex `0x...` / bare hex like `0DE216C8`, or decimal string/number). */
+    /**
+     * Data address to watch: hex `0x...` / bare hex / decimal, or CE
+     * `module+offset` (including spaced names like `NOT A HERO.exe+1FF50D`).
+     */
     address: string | number;
     /** re-mcp / CE scan type. Default int32 (or inferred from `size`). */
     type?: CeScanType;
@@ -48,7 +55,7 @@ export function resolveMonitorWritesTypeAndSize(args: {
     return { type: DEFAULT_TYPE, size: ceScanTypeSize(DEFAULT_TYPE) };
 }
 
-/** Parse address into a Lua-safe unsigned integer literal. */
+/** Parse a numeric address into a Lua-safe unsigned integer literal. */
 export function parseMonitorAddress(address: string | number): bigint {
     if (typeof address === "number") {
         if (!Number.isFinite(address) || address < 0) {
@@ -71,8 +78,54 @@ export function parseMonitorAddress(address: string | number): bigint {
         return BigInt(trimmed);
     }
     throw new Error(
-        `Invalid monitor address: ${JSON.stringify(address)} (expected hex 0x... / bare hex like 0C505970, or decimal)`,
+        `Invalid monitor address: ${JSON.stringify(address)} (expected hex 0x... / bare hex like 0C505970, decimal, or module+offset)`,
     );
+}
+
+function extractEvalLuaText(raw: unknown): string {
+    if (typeof raw === "string") {
+        return raw;
+    }
+    if (raw !== null && typeof raw === "object") {
+        const obj = raw as { result?: unknown; value?: unknown; output?: unknown };
+        for (const key of ["result", "value", "output"] as const) {
+            const v = obj[key];
+            if (typeof v === "string") {
+                return v;
+            }
+        }
+    }
+    throw new Error(
+        `ce_eval_lua did not return a JSON string WriteDump: ${JSON.stringify(raw)}`,
+    );
+}
+
+async function resolveSymbolicAddress(mcp: Client, spec: string): Promise<bigint> {
+    const normalized = normalizeAddressSpec(spec);
+    const code = `
+local a = getAddressSafe(${JSON.stringify(normalized)})
+if not a then
+  local s = ${JSON.stringify(normalized)}
+  if not s:match('^%s*"') then
+    local mod, op, off = s:match("^%s*(.-)%s*([+-])%s*(0?[xX]?%x+)%s*$")
+    if mod and op and off and mod:find("%s") then
+      mod = mod:gsub('^"+', ""):gsub('"+$', "")
+      a = getAddressSafe(string.format('"%s"%s%s', mod, op, off))
+    end
+  end
+end
+if not a then error("bad address: " .. ${JSON.stringify(normalized)}) end
+return string.format("0x%X", a)
+`;
+    const evalResult = await callTool(mcp, CeTool.EvalLua, { code });
+    const text = extractEvalLuaText(evalResult).trim();
+    try {
+        return parseMonitorAddress(text);
+    } catch {
+        throw new Error(
+            `Could not resolve address ${JSON.stringify(normalized)}: ${text}`,
+        );
+    }
 }
 
 async function loadMonitorWritesLua(): Promise<string> {
@@ -103,24 +156,6 @@ return monitorWrites(${address.toString(10)}, ${size}, ${durationMs}, ${JSON.str
 `;
 }
 
-function extractEvalLuaText(raw: unknown): string {
-    if (typeof raw === "string") {
-        return raw;
-    }
-    if (raw !== null && typeof raw === "object") {
-        const obj = raw as { result?: unknown; value?: unknown; output?: unknown };
-        for (const key of ["result", "value", "output"] as const) {
-            const v = obj[key];
-            if (typeof v === "string") {
-                return v;
-            }
-        }
-    }
-    throw new Error(
-        `ce_eval_lua did not return a JSON string WriteDump: ${JSON.stringify(raw)}`,
-    );
-}
-
 /**
  * Custom MCP-facing operation: find what writes to `address`.
  * Does not call a native CE "monitor_writes" tool — it loads Lua and runs ce_eval_lua.
@@ -129,7 +164,12 @@ export async function monitorWrites(
     mcp: Client,
     args: MonitorWritesArgs,
 ): Promise<WriteDump> {
-    const address = parseMonitorAddress(args.address);
+    let address: bigint;
+    if (typeof args.address === "string" && isSymbolicAddressSpec(args.address)) {
+        address = await resolveSymbolicAddress(mcp, args.address);
+    } else {
+        address = parseMonitorAddress(args.address);
+    }
     const { type, size } = resolveMonitorWritesTypeAndSize(args);
     const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
 

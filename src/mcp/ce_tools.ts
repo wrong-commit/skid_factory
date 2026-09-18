@@ -374,6 +374,6 @@ export async function callTool<N extends CeToolName>(
         name,
         arguments: parsedArgs as Record<string, unknown>,
     });
-    console.log(`MCP RESULT DEBUG (${name}):\n${JSON.stringify(raw, undefined, 2)}`);
+    // console.log(`MCP RESULT DEBUG (${name}):\n${JSON.stringify(raw, undefined, 2)}`);
     return parseToolResult(name, raw);
 }

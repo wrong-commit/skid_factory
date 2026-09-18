@@ -3,6 +3,7 @@
  * SPEC: specs/SPEC_POC_ADVISE_CURSOR_CLI.md
  */
 
+import { parseDisassembleArgs, parseLeadingAddressSpec } from "../address_spec.ts";
 import {
     classifyAdviseStep,
     type AdvisePlan,
@@ -62,14 +63,12 @@ export async function executeAdvisePlan(
                 }
                 case "disassemble": {
                     const rest = step.replace(/^disassemble\s+/i, "").trim();
-                    const parts = rest.split(/\s+/);
-                    const addr = parts[0];
-                    if (!addr) {
-                        log.printErr("disassemble: missing address");
+                    const parsed = parseDisassembleArgs(rest);
+                    if ("error" in parsed) {
+                        log.printErr(parsed.error);
                         break;
                     }
-                    const ctx = parts[1] !== undefined ? Number(parts[1]) : 5;
-                    await runners.disassemble(addr, Number.isInteger(ctx) ? ctx : 5);
+                    await runners.disassemble(parsed.address, parsed.ctx);
                     break;
                 }
                 case "monitor_writes": {
@@ -104,7 +103,9 @@ export async function executeAdvisePlan(
                     break;
                 }
                 case "resolve_base": {
-                    const spec = step.replace(/^resolve_base\s+/i, "").trim();
+                    const rest = step.replace(/^resolve_base\s+/i, "").trim();
+                    const leading = parseLeadingAddressSpec(rest);
+                    const spec = leading ? leading.address : rest;
                     if (!spec) {
                         log.printErr("resolve_base: missing idx|addr");
                         break;

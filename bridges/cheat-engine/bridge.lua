@@ -164,11 +164,29 @@ end
 ------------------------------------------------------------
 -- Helpers
 ------------------------------------------------------------
+-- CE needs quotes when the module name contains spaces:
+--   NOT A HERO.exe+1FF50D  →  "NOT A HERO.exe"+1FF50D
+local function quote_spaced_module_addr(a)
+  if type(a) ~= "string" then return a end
+  if a:match('^%s*"') then return a end
+  local mod, op, off = a:match("^%s*(.-)%s*([+-])%s*(0?[xX]?%x+)%s*$")
+  if not mod or not op or not off then return a end
+  if not mod:find("%s") then return a end
+  mod = mod:gsub('^"+', ""):gsub('"+$', "")
+  return string.format('"%s"%s%s', mod, op, off)
+end
+
 local function parse_addr(a)
   if type(a) == "number" then return a end
   if type(a) == "string" then
-    local n = getAddressSafe(a)
-    if n then return n end
+    local candidates = { a, quote_spaced_module_addr(a) }
+    for i = 1, #candidates do
+      local cand = candidates[i]
+      if cand then
+        local n = getAddressSafe(cand)
+        if n then return n end
+      end
+    end
     -- tonumber("0x..", 16) is nil in Lua; strip prefix first
     local hex = a:match("^0[xX](%x+)$") or a:match("^(%x+)$")
     if hex and (#hex >= 1) then
@@ -624,9 +642,10 @@ handlers.auto_assemble = function(p)
 end
 
 handlers.resolve_symbol = function(p)
-  local addr = getAddressSafe(tostring(p.symbol))
+  local sym = tostring(p.symbol)
+  local addr = parse_addr(sym)
   if not addr then return nil, "could not resolve" end
-  return { symbol = p.symbol, address = string.format("%X", addr) }
+  return { symbol = sym, address = string.format("%X", addr) }
 end
 
 handlers.set_speedhack = function(p)

@@ -28,6 +28,11 @@ import {
 } from "./mcp/ce_tools.ts";
 import { monitorWrites, resolveMonitorWritesTypeAndSize } from "./handlers/monitor_writes.ts";
 import { clearAllWriteBreakpoints } from "./handlers/write_breakpoint.ts";
+import {
+    normalizeAddressSpec,
+    parseDisassembleArgs,
+    parseLeadingAddressSpec,
+} from "./address_spec.ts";
 import { createSessionLog } from "./advise/session_log.ts";
 import { buildAdvisePrompt } from "./advise/build_prompt.ts";
 import { runCursorOneShot } from "./advise/cursor_cli.ts";
@@ -197,18 +202,19 @@ function parseSaveBaseAddressCommand(rest: string): {
     offsets?: number[];
     note: string;
 } | { error: string } {
-    const tokens = rest.trim().split(/\s+/).filter(Boolean);
-    if (tokens.length < 1) {
-        return {
-            error:
-                "Usage: save_base_address <addr> [type] [0x888,0x14,0x158] <note...>\n" +
-                "  example: save_base_address 0x985F48 double 0x888,0x14,0x158 hp\n" +
-                "  example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158",
-        };
+    const usage =
+        "Usage: save_base_address <addr> [type] [0x888,0x14,0x158] <note...>\n" +
+        "  example: save_base_address 0x985F48 double 0x888,0x14,0x158 hp\n" +
+        "  example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158";
+
+    const leading = parseLeadingAddressSpec(rest.trim());
+    if (!leading) {
+        return { error: usage };
     }
 
-    const base = normalizeAddressSpec(tokens[0]!);
-    let idx = 1;
+    const base = leading.address;
+    const tokens = leading.rest === "" ? [] : leading.rest.split(/\s+/).filter(Boolean);
+    let idx = 0;
     let type: CeScanType | undefined;
     let offsets: number[] | undefined;
     const noteParts: string[] = [];
@@ -364,20 +370,8 @@ function findBaseEntry(
 }
 
 /**
- * Normalize a CE address spec for Lua getAddress / breakpoints.
- * Bare hex like `0C505970` / `25C3260C038` → `0x...`; leave `0x...`, decimal, and `module+offset` alone.
+ * Address specs: see `./address_spec.ts` (hex, module+offset, spaced module names).
  */
-function normalizeAddressSpec(spec: string): string {
-    const s = spec.trim();
-    if (/^0x[0-9A-Fa-f]+$/i.test(s)) {
-        return s;
-    }
-    // CE-style bare hex (has A–F, or long enough to be an address not a small decimal)
-    if (/^[0-9A-Fa-f]+$/i.test(s) && (/[A-Fa-f]/.test(s) || s.length >= 8)) {
-        return `0x${s}`;
-    }
-    return s;
-}
 
 const INTEGER_SCAN_TYPES = new Set<CeScanType>([
     "byte",
@@ -486,9 +480,11 @@ function printHelp(): void {
                                   example: monitor_writes 0C505970 double 5000
                                   default type: last scan type (else int32), ms=3000
   show_write_locations            same as monitor_writes using current watched address
-  disassemble <loc|hex> [ctx=5]   disassemble target with ctx lines above and below
+  disassemble <loc|hex|module+off> [ctx=5]
+                                  disassemble target with ctx lines above and below
                                   tip: use a rip from monitor_writes, not the data address
                                   example: disassemble 0x7BFA4D
+                                  example: disassemble NOT A HERO.exe+1FF50D ctx=5
   poc_patch <addr> <value> [type] write memory at a resolved address (NOT a static base)
                                   example: poc_patch 0C505970 99 double
   poc_patch_base <idx|addr> <value> [type] follow offsets[] in base_addresses.json, then write
@@ -647,7 +643,8 @@ function parseMonitorWritesCommand(
 ): { address: string; type: CeScanType; size: number; durationMs: number } | null {
     const usage =
         "Usage: monitor_writes <addr> [type|size=int32] [durationMs=3000]\n" +
-        "  example: monitor_writes 0C505970 double 5000";
+        "  example: monitor_writes 0C505970 double 5000\n" +
+        "  example: monitor_writes NOT A HERO.exe+1FF50D double 5000";
 
     if (cmd === "show_write_locations" || cmd === "monitor_writes") {
         if (!watched) {
@@ -662,43 +659,45 @@ function parseMonitorWritesCommand(
         return { address: watched, ...resolved, durationMs: 3000 };
     }
 
-    const parts = cmd.slice("monitor_writes ".length).trim().split(/\s+/);
-    const rawAddress = parts[0];
-    if (!rawAddress) {
+    const rest = cmd.slice("monitor_writes ".length).trim();
+    const leading = parseLeadingAddressSpec(rest);
+    if (!leading) {
         console.error(usage);
         return null;
     }
 
+    const parts = leading.rest === "" ? [] : leading.rest.split(/\s+/).filter(Boolean);
+
     let type = defaultType;
     let size: number | undefined;
-    if (parts[1] !== undefined) {
-        const asType = resolveCeScanType(parts[1]);
+    if (parts[0] !== undefined) {
+        const asType = resolveCeScanType(parts[0]);
         if (asType) {
             type = asType;
         } else {
-            size = Number(parts[1]);
+            size = Number(parts[0]);
             if (!Number.isInteger(size) || size <= 0) {
-                console.error(`Invalid type or size: ${parts[1]}`);
+                console.error(`Invalid type or size: ${parts[0]}`);
                 console.error(`  types: ${CE_SCAN_TYPES.join(", ")}`);
                 return null;
             }
         }
     }
 
-    const durationMs = parts[2] !== undefined ? Number(parts[2]) : 3000;
+    const durationMs = parts[1] !== undefined ? Number(parts[1]) : 3000;
     if (!Number.isInteger(durationMs) || durationMs < 0) {
-        console.error(`Invalid durationMs: ${parts[2]}`);
+        console.error(`Invalid durationMs: ${parts[1]}`);
         return null;
     }
 
-    if (parts[3] !== undefined) {
+    if (parts[2] !== undefined) {
         console.error(usage);
         return null;
     }
 
     const resolved = resolveMonitorWritesTypeAndSize({ type, size });
     return {
-        address: normalizeAddressSpec(rawAddress),
+        address: leading.address,
         ...resolved,
         durationMs,
     };
@@ -712,27 +711,27 @@ function parseFollowAddressCommand(
         return null;
     }
 
-    const usage = `Usage: follow_address <loc|hex> [type]\n  types: ${CE_SCAN_TYPES.join(", ")}`;
+    const usage = `Usage: follow_address <loc|hex|module+off> [type]\n  types: ${CE_SCAN_TYPES.join(", ")}`;
     const rest = cmd === "follow_address" ? "" : cmd.slice("follow_address ".length).trim();
-    const parts = rest === "" ? [] : rest.split(/\s+/);
-    const rawTarget = parts[0];
-    if (!rawTarget) {
+    const leading = parseLeadingAddressSpec(rest);
+    if (!leading) {
         return { error: usage };
     }
+    const parts = leading.rest === "" ? [] : leading.rest.split(/\s+/).filter(Boolean);
 
     let type: CeScanType = defaultType ?? "int32";
-    if (parts[1] !== undefined) {
-        const resolved = resolveCeScanType(parts[1]);
+    if (parts[0] !== undefined) {
+        const resolved = resolveCeScanType(parts[0]);
         if (!resolved) {
-            return { error: `Unknown type: ${parts[1]}. Types: ${CE_SCAN_TYPES.join(", ")}` };
+            return { error: `Unknown type: ${parts[0]}. Types: ${CE_SCAN_TYPES.join(", ")}` };
         }
         type = resolved;
     }
-    if (parts[2] !== undefined) {
+    if (parts[1] !== undefined) {
         return { error: usage };
     }
 
-    return { target: normalizeAddressSpec(rawTarget), type };
+    return { target: leading.address, type };
 }
 
 /**
@@ -1084,15 +1083,13 @@ async function pocTraceBaseAddress(
 
             if (cmd === "disassemble" || cmd.startsWith("disassemble ")) {
                 const rest = cmd === "disassemble" ? "" : cmd.slice("disassemble ".length).trim();
-                const parts = rest === "" ? [] : rest.split(/\s+/);
-                const rawAddr = parts[0];
-                if (!rawAddr) {
-                    sessionLog.printErr("Usage: disassemble <loc|hex> [ctx=5]");
+                const parsed = parseDisassembleArgs(rest);
+                if ("error" in parsed) {
+                    sessionLog.printErr(parsed.error);
                     continue;
                 }
-                const ctx = parts[1] !== undefined ? Number(parts[1]) : 5;
                 try {
-                    await runDisassemble(rawAddr, ctx);
+                    await runDisassemble(parsed.address, parsed.ctx);
                 } catch (err) {
                     sessionLog.printErr(err instanceof Error ? err.message : String(err));
                 }
@@ -1105,8 +1102,10 @@ async function pocTraceBaseAddress(
             }
 
             if (cmd === "resolve_base" || cmd.startsWith("resolve_base ")) {
-                const spec =
+                const rest =
                     cmd === "resolve_base" ? "" : cmd.slice("resolve_base ".length).trim();
+                const leading = parseLeadingAddressSpec(rest);
+                const spec = leading?.address ?? rest;
                 if (!spec) {
                     sessionLog.printErr("Usage: resolve_base <idx|addr>");
                     continue;
@@ -1122,7 +1121,15 @@ async function pocTraceBaseAddress(
             if (cmd === "poc_patch_base" || cmd.startsWith("poc_patch_base ")) {
                 const rest =
                     cmd === "poc_patch_base" ? "" : cmd.slice("poc_patch_base ".length).trim();
-                const parts = rest === "" ? [] : rest.split(/\s+/);
+                const leading = parseLeadingAddressSpec(rest);
+                const parts =
+                    leading === null
+                        ? rest === ""
+                            ? []
+                            : rest.split(/\s+/)
+                        : leading.rest === ""
+                          ? [leading.address]
+                          : [leading.address, ...leading.rest.split(/\s+/).filter(Boolean)];
                 if (parts.length < 2) {
                     console.error("Usage: poc_patch_base <idx|addr> <value> [type]");
                     console.error("  example: poc_patch_base 0 99");
@@ -1184,7 +1191,15 @@ async function pocTraceBaseAddress(
 
             if (cmd === "poc_patch" || cmd.startsWith("poc_patch ")) {
                 const rest = cmd === "poc_patch" ? "" : cmd.slice("poc_patch ".length).trim();
-                const parts = rest === "" ? [] : rest.split(/\s+/);
+                const leading = parseLeadingAddressSpec(rest);
+                const parts =
+                    leading === null
+                        ? rest === ""
+                            ? []
+                            : rest.split(/\s+/)
+                        : leading.rest === ""
+                          ? [leading.address]
+                          : [leading.address, ...leading.rest.split(/\s+/).filter(Boolean)];
                 if (parts.length < 2) {
                     console.error("Usage: poc_patch <addr> <value> [type]");
                     console.error("  example: poc_patch 0C505970 99 double");
