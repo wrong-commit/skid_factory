@@ -498,7 +498,7 @@ function printHelp(): void {
                                   example: save_base_address 0x989B48 double 0,0,0x14,0x100 ammo
                                   example: save_base_address 0x985F48 value double: [[[base]+0x888]+0x14]+0x158
   help                            show this help
-  quit | exit | cancel            exit without saving
+  quit | exit | cancel            exit REPL
 
 Typical flow (ammo / any value):
   1. scan <type> <value> → change in-game → scan again → scan_results
@@ -1158,7 +1158,7 @@ async function pocTraceBaseAddress(
                 console.log(
                     `Appended to ${BASE_ADDRESSES_PATH}: ${JSON.stringify(entry, null, 2)}`,
                 );
-                break;
+                continue;
             }
 
             console.error(`Unknown command: ${cmd} (type help)`);
@@ -1212,7 +1212,7 @@ const main = async (): Promise<void> => {
         if (!cleaningUp) {
             cleaningUp = true;
             rl.close();
-            // Normal exit (quit/exit/cancel/save_base_address): clear breakpoints then close MCP
+            // Normal exit (quit/exit/cancel): clear breakpoints then close MCP
             await clearBreakpointsOnExit(mcp);
             await mcp.close();
         }
