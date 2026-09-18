@@ -7,7 +7,7 @@ In the future, this program will generate a DLL that provides keybindings to res
 
 ## Demo
 
-[![Demo: Not a Hero pointer-trace → `poc_patch_base` ammo to 99](demos/example_hacking_thumb.jpg)](demos/example_hacking.mp4)
+[![Demo: Not a Hero pointer-trace → `poc_patch_base` ammo to 99](demos/example_hacking_thumb.jpg)](demos/example_hacking_thumb.jpg)
 
 [Watch the demo video](demos/example_hacking.mp4) (~4.5 min) — scan → pointer walk → `save_base_address` → `poc_patch_base`, with Cursor `advise` in the loop. No human interaction other than reducing player ammo when prompted by the agent.
 
