@@ -9,7 +9,7 @@ In the future, this program will generate a DLL that provides keybindings to res
 
 [![Demo: Not a Hero pointer-trace → `write_base_address` ammo to 99](demos/example_hacking_thumb.jpg)](demos/example_hacking_thumb.jpg)
 
-[Watch the demo video](demos/example_hacking.mp4) (~4.5 min) — scan → pointer walk → `save_base_address` → `write_base_address`, with Cursor `advise` in the loop. No human interaction other than reducing player ammo when prompted by the agent.
+[Watch the demo video](demos/example_hacking.mp4) (~4.5 min) — scan → pointer walk → `save_base_address` → `write_base_address`, with Cursor `advise` in the loop. No human effort other than reducing player ammo when prompted by the agent.
 
 ## Why ?
 This took me a couple of afternoons when I was 16 - hours spent recording hexadecimal memory addresses and writing C I barely understood using Win32 API's I would partially grok to memory patch an application. A decade later, I am now able to force my computer to perform this operation for me. If that's not progress, I don't know what is.
